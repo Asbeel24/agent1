@@ -8,6 +8,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 export type OrbMode = 'idle' | 'dialogue' | 'recording' | 'meeting' | 'translate'
 
 const DESKTOP_PARTICLE_COUNT = 16000
+const MAX_MARKERS = 8
 
 type DeviceProfile = {
   label: string
@@ -130,11 +131,35 @@ const BUILT_IN_PRESETS: Record<string, Partial<SimulationControls>> = {
 
 export type ParticleOrbParams = Partial<SimulationControls>
 
+export type OrbMarkerOptions = {
+  visible?: boolean
+  orbitRadius?: number
+  phase?: number
+  speed?: number
+  tilt?: number
+  brightness?: number
+  size?: number
+  color?: string
+}
+
+export type OrbMarkerState = Required<OrbMarkerOptions> & {
+  id: string
+  slot: number
+}
+
+export type OrbPersonaOptions = {
+  color: string
+  transition?: number
+}
+
 export type ParticleOrbState = {
   version: 1
   params: SimulationControls
   preset: string
   audioLevel: number
+  horizontalInput: number
+  personaColor: string
+  markers: OrbMarkerState[]
 }
 
 export type ParticleOrbAPI = {
@@ -143,17 +168,77 @@ export type ParticleOrbAPI = {
   getState: () => ParticleOrbState
   reset: () => ParticleOrbState
   setAudioLevel: (level: number) => ParticleOrbState
+  setHorizontalInput: (value: number) => ParticleOrbState
+  setPersona: (options: OrbPersonaOptions) => ParticleOrbState
   trigger: (name: 'burst', options?: { intensity?: number; duration?: number }) => ParticleOrbState
   setPreset: (name: string) => ParticleOrbState
   registerPreset: (name: string, params: ParticleOrbParams) => void
   setAllowedOrigins: (origins: string[]) => void
+  markers: {
+    set: (id: string, options?: OrbMarkerOptions) => OrbMarkerState
+    flash: (id: string, options?: { intensity?: number; duration?: number }) => OrbMarkerState
+    remove: (id: string) => void
+    clear: () => void
+    list: () => OrbMarkerState[]
+  }
+}
+
+export type OrbDebugAPI = {
+  fire: (eventName: string, payload?: Record<string, unknown> | number | string) => unknown
+  api: ParticleOrbAPI
 }
 
 declare global {
   interface Window {
     particleOrb?: ParticleOrbAPI
     ParticleOrbAPI?: ParticleOrbAPI
+    __orb?: OrbDebugAPI
   }
+}
+
+type InternalMarker = OrbMarkerState & {
+  colorValue: THREE.Color
+  flashEnergy: number
+  flashDecayPerSecond: number
+}
+
+const DEFAULT_MARKER_OPTIONS: Required<OrbMarkerOptions> = {
+  visible: true,
+  orbitRadius: 1.28,
+  phase: 0,
+  speed: 0.22,
+  tilt: 0.3,
+  brightness: 1.6,
+  size: 12,
+  color: '#ffffff',
+}
+
+function markerToPublic(marker: InternalMarker): OrbMarkerState {
+  const { colorValue: _colorValue, flashEnergy: _flashEnergy, flashDecayPerSecond: _flashDecay, ...state } = marker
+  return { ...state }
+}
+
+function sanitizeMarkerOptions(input: OrbMarkerOptions = {}): OrbMarkerOptions {
+  const result: OrbMarkerOptions = {}
+  if (typeof input.visible === 'boolean') result.visible = input.visible
+  if (typeof input.color === 'string' && input.color.length <= 64) result.color = input.color
+  const limits: Partial<Record<keyof OrbMarkerOptions, readonly [number, number]>> = {
+    orbitRadius: [1.05, 1.8],
+    phase: [-100, 100],
+    speed: [-2, 2],
+    tilt: [-Math.PI / 2, Math.PI / 2],
+    brightness: [0, 4],
+    size: [2, 32],
+  }
+  for (const [key, range] of Object.entries(limits) as Array<
+    [keyof OrbMarkerOptions, readonly [number, number]]
+  >) {
+    const value = input[key]
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      ;(result as Record<string, unknown>)[key] = THREE.MathUtils.clamp(value, range[0], range[1])
+    }
+  }
+  return result
 }
 
 function sanitizeParams(input: unknown): ParticleOrbParams {
@@ -404,6 +489,7 @@ const particleFragmentShader = /* glsl */ `
   uniform float uLevelGain;
   uniform float uLevelGamma;
   uniform float uParticleOpacity;
+  uniform vec3 uPersonaColor;
   varying float vLife;
   varying float vVisible;
 
@@ -424,9 +510,42 @@ const particleFragmentShader = /* glsl */ `
     vec3 secondHalf = mix(matureColor, oldColor, smoothstep(0.48, 1.0, vLife));
     vec3 lifeGradient = mix(firstHalf, secondHalf, step(0.48, vLife));
 
-    vec3 color = mix(vec3(1.0), lifeGradient, uLifeColor);
+    vec3 color = mix(vec3(1.0), lifeGradient, uLifeColor) * uPersonaColor;
     color = pow(max(color * uLevelGain, vec3(0.0)), vec3(1.0 / max(uLevelGamma, 0.001)));
     gl_FragColor = vec4(color, alpha);
+  }
+`
+
+const markerVertexShader = /* glsl */ `
+  precision highp float;
+  uniform float uPixelRatio;
+  attribute float aSize;
+  attribute float aBrightness;
+  attribute vec3 aColor;
+  varying float vBrightness;
+  varying vec3 vColor;
+
+  void main() {
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    gl_PointSize = aSize * uPixelRatio;
+    vBrightness = aBrightness;
+    vColor = aColor;
+  }
+`
+
+const markerFragmentShader = /* glsl */ `
+  precision highp float;
+  varying float vBrightness;
+  varying vec3 vColor;
+
+  void main() {
+    vec2 point = gl_PointCoord - 0.5;
+    float distanceToCenter = length(point);
+    if (distanceToCenter > 0.5 || vBrightness <= 0.0) discard;
+    float core = 1.0 - smoothstep(0.04, 0.2, distanceToCenter);
+    float halo = (1.0 - smoothstep(0.08, 0.5, distanceToCenter)) * 0.45;
+    float alpha = min(1.0, (core + halo) * vBrightness);
+    gl_FragColor = vec4(vColor * (0.75 + vBrightness * 0.75), alpha);
   }
 `
 
@@ -503,14 +622,27 @@ function addSimulationUniforms(
 export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const controlsRef = useRef<SimulationControls>({ ...DEFAULT_CONTROLS })
+  const renderedControlsRef = useRef<SimulationControls>({ ...DEFAULT_CONTROLS })
   const presetRef = useRef('idle')
   const presetsRef = useRef<Record<string, ParticleOrbParams>>({ ...BUILT_IN_PRESETS })
   const audioTargetRef = useRef(0)
   const audioCurrentRef = useRef(0)
+  const horizontalTargetRef = useRef(0)
+  const horizontalCurrentRef = useRef(0)
   const burstRef = useRef({ energy: 0, decayPerSecond: 1 })
+  const markersRef = useRef(new Map<string, InternalMarker>())
+  const personaRef = useRef({
+    current: new THREE.Color('#ffffff'),
+    from: new THREE.Color('#ffffff'),
+    target: new THREE.Color('#ffffff'),
+    elapsed: 1,
+    duration: 1,
+  })
   const allowedOriginsRef = useRef(new Set(['*']))
   const notifyRef = useRef<(type: string, state: ParticleOrbState) => void>(() => undefined)
   const [controls, setControls] = useState<SimulationControls>({ ...DEFAULT_CONTROLS })
+  const [personaColor, setPersonaColor] = useState('#ffffff')
+  const [markerStates, setMarkerStates] = useState<OrbMarkerState[]>([])
   const [deviceSummary, setDeviceSummary] = useState('检测设备…')
 
   const getPublicState = (): ParticleOrbState => ({
@@ -518,6 +650,9 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
     params: { ...controlsRef.current },
     preset: presetRef.current,
     audioLevel: audioTargetRef.current,
+    horizontalInput: horizontalTargetRef.current,
+    personaColor: `#${personaRef.current.target.getHexString()}`,
+    markers: Array.from(markersRef.current.values(), markerToPublic),
   })
 
   const commitControls = (next: SimulationControls, preset = 'custom') => {
@@ -534,7 +669,14 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
 
   const resetControls = () => {
     audioTargetRef.current = 0
+    horizontalTargetRef.current = 0
     burstRef.current.energy = 0
+    markersRef.current.clear()
+    personaRef.current.current.set('#ffffff')
+    personaRef.current.from.set('#ffffff')
+    personaRef.current.target.set('#ffffff')
+    personaRef.current.elapsed = personaRef.current.duration
+    setPersonaColor('#ffffff')
     commitControls({ ...DEFAULT_CONTROLS }, 'idle')
   }
 
@@ -592,6 +734,7 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
         uLevelGain: { value: controlsRef.current.levelGain },
         uLevelGamma: { value: controlsRef.current.levelGamma },
         uParticleOpacity: { value: controlsRef.current.particleOpacity },
+        uPersonaColor: { value: personaRef.current.current },
       },
       vertexShader: particleVertexShader,
       fragmentShader: particleFragmentShader,
@@ -603,6 +746,30 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
     const points = new THREE.Points(geometry, material)
     points.frustumCulled = false
     scene.add(points)
+
+    const markerPositions = new Float32Array(MAX_MARKERS * 3)
+    const markerSizes = new Float32Array(MAX_MARKERS)
+    const markerBrightness = new Float32Array(MAX_MARKERS)
+    const markerColors = new Float32Array(MAX_MARKERS * 3)
+    const markerGeometry = new THREE.BufferGeometry()
+    markerGeometry.setAttribute('position', new THREE.BufferAttribute(markerPositions, 3))
+    markerGeometry.setAttribute('aSize', new THREE.BufferAttribute(markerSizes, 1))
+    markerGeometry.setAttribute('aBrightness', new THREE.BufferAttribute(markerBrightness, 1))
+    markerGeometry.setAttribute('aColor', new THREE.BufferAttribute(markerColors, 3))
+    markerGeometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 2000)
+    const markerMaterial = new THREE.ShaderMaterial({
+      uniforms: { uPixelRatio: { value: pixelRatio } },
+      vertexShader: markerVertexShader,
+      fragmentShader: markerFragmentShader,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      depthTest: false,
+      toneMapped: false,
+    })
+    const markerPoints = new THREE.Points(markerGeometry, markerMaterial)
+    markerPoints.frustumCulled = false
+    scene.add(markerPoints)
 
     const composer = new EffectComposer(renderer)
     composer.setPixelRatio(pixelRatio)
@@ -630,6 +797,57 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
     }
     notifyRef.current = emitState
 
+    const markerAPI: ParticleOrbAPI['markers'] = {
+      set: (id, options = {}) => {
+        if (!id || id.length > 64) throw new Error('Marker id must contain 1–64 characters')
+        const existing = markersRef.current.get(id)
+        if (!existing && markersRef.current.size >= MAX_MARKERS) {
+          throw new Error(`Particle orb supports at most ${MAX_MARKERS} markers`)
+        }
+        const slot = existing?.slot ?? Array.from({ length: MAX_MARKERS }, (_, index) => index).find(
+          (candidate) => !Array.from(markersRef.current.values()).some((marker) => marker.slot === candidate),
+        )!
+        const sanitized = sanitizeMarkerOptions(options)
+        const base = existing ?? {
+          ...DEFAULT_MARKER_OPTIONS,
+          id,
+          slot,
+          phase: slot / MAX_MARKERS,
+          colorValue: new THREE.Color(DEFAULT_MARKER_OPTIONS.color),
+          flashEnergy: 0,
+          flashDecayPerSecond: 1,
+        }
+        const marker: InternalMarker = { ...base, ...sanitized, id, slot }
+        if (sanitized.color) marker.colorValue.set(sanitized.color)
+        marker.color = `#${marker.colorValue.getHexString()}`
+        markersRef.current.set(id, marker)
+        setMarkerStates(Array.from(markersRef.current.values(), markerToPublic))
+        emitState('markersChanged', getPublicState())
+        return markerToPublic(marker)
+      },
+      flash: (id, options = {}) => {
+        const marker = markersRef.current.get(id)
+        if (!marker) throw new Error(`Unknown particle orb marker: ${id}`)
+        const intensity = THREE.MathUtils.clamp(options.intensity ?? 1, 0, 4)
+        const duration = THREE.MathUtils.clamp(options.duration ?? 0.45, 0.05, 5)
+        marker.flashEnergy = Math.max(marker.flashEnergy, intensity)
+        marker.flashDecayPerSecond = intensity / duration
+        emitState('markerFlashed', getPublicState())
+        return markerToPublic(marker)
+      },
+      remove: (id) => {
+        markersRef.current.delete(id)
+        setMarkerStates(Array.from(markersRef.current.values(), markerToPublic))
+        emitState('markersChanged', getPublicState())
+      },
+      clear: () => {
+        markersRef.current.clear()
+        setMarkerStates([])
+        emitState('markersChanged', getPublicState())
+      },
+      list: () => Array.from(markersRef.current.values(), markerToPublic),
+    }
+
     const api: ParticleOrbAPI = {
       version: 1,
       setParams: (params) => {
@@ -639,12 +857,35 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
       getState: getPublicState,
       reset: () => {
         audioTargetRef.current = 0
+        horizontalTargetRef.current = 0
         burstRef.current.energy = 0
+        markersRef.current.clear()
+        setMarkerStates([])
+        personaRef.current.current.set('#ffffff')
+        personaRef.current.from.set('#ffffff')
+        personaRef.current.target.set('#ffffff')
+        personaRef.current.elapsed = personaRef.current.duration
+        setPersonaColor('#ffffff')
         commitControls({ ...DEFAULT_CONTROLS }, 'idle')
         return getPublicState()
       },
       setAudioLevel: (level) => {
         audioTargetRef.current = THREE.MathUtils.clamp(Number.isFinite(level) ? level : 0, 0, 1)
+        return getPublicState()
+      },
+      setHorizontalInput: (value) => {
+        horizontalTargetRef.current = THREE.MathUtils.clamp(Number.isFinite(value) ? value : 0, -1, 1)
+        return getPublicState()
+      },
+      setPersona: ({ color, transition = 1 }) => {
+        if (typeof color !== 'string' || !color) throw new Error('Persona color is required')
+        const persona = personaRef.current
+        persona.from.copy(persona.current)
+        persona.target.set(color)
+        persona.elapsed = 0
+        persona.duration = THREE.MathUtils.clamp(transition, 0.05, 10)
+        setPersonaColor(`#${persona.target.getHexString()}`)
+        emitState('personaChanged', getPublicState())
         return getPublicState()
       },
       trigger: (name, options = {}) => {
@@ -668,6 +909,43 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
       },
       setAllowedOrigins: (origins) => {
         allowedOriginsRef.current = new Set(origins.filter((origin) => typeof origin === 'string' && origin.length > 0))
+      },
+      markers: markerAPI,
+    }
+
+    const debugAPI: OrbDebugAPI = {
+      api,
+      fire: (eventName, payload = {}) => {
+        const data = payload && typeof payload === 'object' ? payload : { value: payload }
+        const rawValue = (data as Record<string, unknown>).level ?? (data as Record<string, unknown>).value
+        const value = Number(rawValue ?? 0)
+        if (['voice', 'volume', '音量', '用户说话'].includes(eventName)) {
+          return api.setAudioLevel(rawValue === undefined ? 0.78 : value)
+        }
+        if (['horizontal', 'swipe', '横滑'].includes(eventName)) return api.setHorizontalInput(value)
+        if (['burst', '能量爆发', '主动发声'].includes(eventName)) {
+          return api.trigger('burst', data as { intensity?: number; duration?: number })
+        }
+        if (['state', 'preset', '状态切换'].includes(eventName)) {
+          const name = String((data as Record<string, unknown>).name ?? (data as Record<string, unknown>).value ?? 'speaking')
+          return api.setPreset(name)
+        }
+        if (['persona', '人格换色'].includes(eventName)) {
+          const color = String((data as Record<string, unknown>).color ?? '#74a7ff')
+          const transition = Number((data as Record<string, unknown>).transition ?? 1)
+          return api.setPersona({ color, transition })
+        }
+        const id = String((data as Record<string, unknown>).id ?? 'task-1')
+        if (['task:add', '新建任务'].includes(eventName)) return markerAPI.set(id, data as OrbMarkerOptions)
+        if (['task:progress', '任务有进展'].includes(eventName)) {
+          const progress = Number((data as Record<string, unknown>).progress ?? 0.5)
+          return markerAPI.flash(id, { intensity: 0.8 + THREE.MathUtils.clamp(progress, 0, 1) * 1.2 })
+        }
+        if (['task:complete', '任务完成'].includes(eventName)) {
+          return markerAPI.flash(id, { intensity: 2.4, duration: 0.8 })
+        }
+        if (['task:remove', '移除任务'].includes(eventName)) return markerAPI.remove(id)
+        throw new Error(`Unknown orb debug event: ${eventName}`)
       },
     }
 
@@ -695,6 +973,11 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
         } else if (type === 'setAudioLevel' || type === 'audio-level') {
           const level = typeof payload === 'number' ? payload : Number((payload as { level?: unknown })?.level)
           state = api.setAudioLevel(level)
+        } else if (type === 'setHorizontalInput' || type === 'horizontal-input') {
+          const value = typeof payload === 'number' ? payload : Number((payload as { value?: unknown })?.value)
+          state = api.setHorizontalInput(value)
+        } else if (type === 'setPersona' || type === 'set-persona') {
+          state = api.setPersona((payload ?? {}) as OrbPersonaOptions)
         } else if (type === 'trigger') {
           const triggerPayload = (payload ?? {}) as { name?: unknown; intensity?: number; duration?: number }
           state = api.trigger(String(triggerPayload.name ?? 'burst') as 'burst', triggerPayload)
@@ -704,6 +987,22 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
         } else if (type === 'reset') {
           state = api.reset()
         } else if (type === 'getState' || type === 'get-state') {
+          state = api.getState()
+        } else if (type === 'marker-set') {
+          const markerPayload = (payload ?? {}) as OrbMarkerOptions & { id?: string }
+          markerAPI.set(String(markerPayload.id ?? ''), markerPayload)
+          state = api.getState()
+        } else if (type === 'marker-flash') {
+          const markerPayload = (payload ?? {}) as { id?: string; intensity?: number; duration?: number }
+          markerAPI.flash(String(markerPayload.id ?? ''), markerPayload)
+          state = api.getState()
+        } else if (type === 'marker-remove') {
+          const id = typeof payload === 'string' ? payload : String((payload as { id?: unknown })?.id ?? '')
+          markerAPI.remove(id)
+          state = api.getState()
+        } else if (type === 'debug-fire') {
+          const debugPayload = (payload ?? {}) as { eventName?: string; data?: Record<string, unknown> }
+          debugAPI.fire(String(debugPayload.eventName ?? ''), debugPayload.data)
           state = api.getState()
         } else {
           throw new Error(`Unsupported particle orb message: ${type}`)
@@ -717,6 +1016,7 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
 
     window.particleOrb = api
     window.ParticleOrbAPI = api
+    window.__orb = debugAPI
     window.addEventListener('message', handleMessage)
     emitState('ready', api.getState())
 
@@ -768,12 +1068,32 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
       }
       const delta = Math.min((now - lastTime) / 1000, 1 / 30)
       lastTime = now
-      const currentControls = controlsRef.current
+      const targetControls = controlsRef.current
+      const currentControls = renderedControlsRef.current
+      const parameterSmoothing = 1 - Math.exp(-9 * delta)
+      for (const key of Object.keys(CONTROL_LIMITS) as Array<keyof SimulationControls>) {
+        if (key === 'noiseType') {
+          currentControls[key] = targetControls[key]
+        } else {
+          currentControls[key] += (targetControls[key] - currentControls[key]) * parameterSmoothing
+        }
+      }
       const audioSmoothing = 1 - Math.exp(-12 * delta)
       audioCurrentRef.current += (audioTargetRef.current - audioCurrentRef.current) * audioSmoothing
+      const horizontalSmoothing = 1 - Math.exp(-10 * delta)
+      horizontalCurrentRef.current +=
+        (horizontalTargetRef.current - horizontalCurrentRef.current) * horizontalSmoothing
       const audioLevel = audioCurrentRef.current
       const burstEnergy = burstRef.current.energy
       burstRef.current.energy = Math.max(0, burstEnergy - burstRef.current.decayPerSecond * delta)
+
+      const persona = personaRef.current
+      if (persona.elapsed < persona.duration) {
+        persona.elapsed = Math.min(persona.duration, persona.elapsed + delta)
+        const linearProgress = persona.elapsed / persona.duration
+        const easedProgress = linearProgress * linearProgress * (3 - 2 * linearProgress)
+        persona.current.lerpColors(persona.from, persona.target, easedProgress)
+      }
 
       const effectiveMotionSpeed = currentControls.motionSpeed + burstEnergy * 0.9
       const effectiveNoiseAmplitude = Math.min(1.4, currentControls.noiseAmplitude + audioLevel * 0.5)
@@ -782,7 +1102,7 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
         currentControls.noiseForce + audioLevel * 0.18 + burstEnergy * 0.24,
       )
       const frameScale = delta * 60 * effectiveMotionSpeed
-      angle += 0.01 * frameScale
+      angle += 0.01 * frameScale + horizontalCurrentRef.current * delta * 0.85
       noiseTime += delta * (currentControls.noiseSpeed + burstEnergy * 0.45)
 
       if (!computeError) {
@@ -806,6 +1126,28 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
       material.uniforms.uLevelGain.value = currentControls.levelGain + burstEnergy * 0.22
       material.uniforms.uLevelGamma.value = currentControls.levelGamma
       material.uniforms.uParticleOpacity.value = currentControls.particleOpacity
+      material.uniforms.uPersonaColor.value = persona.current
+
+      markerBrightness.fill(0)
+      for (const marker of markersRef.current.values()) {
+        const slot = marker.slot
+        const orbitAngle = marker.phase * Math.PI * 2 + now * 0.001 * marker.speed
+        const orbitDistance = radius * marker.orbitRadius
+        const sinAngle = Math.sin(orbitAngle)
+        markerPositions[slot * 3] = Math.cos(orbitAngle) * orbitDistance
+        markerPositions[slot * 3 + 1] = sinAngle * orbitDistance * Math.cos(marker.tilt)
+        markerPositions[slot * 3 + 2] = sinAngle * orbitDistance * Math.sin(marker.tilt)
+        const flashEnergy = marker.flashEnergy
+        marker.flashEnergy = Math.max(0, flashEnergy - marker.flashDecayPerSecond * delta)
+        markerBrightness[slot] = marker.visible ? marker.brightness + flashEnergy * 1.8 : 0
+        markerSizes[slot] = marker.size * (1 + flashEnergy * 0.3)
+        marker.colorValue.toArray(markerColors, slot * 3)
+      }
+      markerGeometry.getAttribute('position').needsUpdate = true
+      markerGeometry.getAttribute('aSize').needsUpdate = true
+      markerGeometry.getAttribute('aBrightness').needsUpdate = true
+      markerGeometry.getAttribute('aColor').needsUpdate = true
+
       bloomPass.strength =
         (currentControls.bloomStrength + audioLevel * 0.12 + burstEnergy * 1.1) * profile.bloomScale
       bloomPass.radius = currentControls.bloomRadius
@@ -825,9 +1167,12 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
       window.removeEventListener('message', handleMessage)
       if (window.particleOrb === api) delete window.particleOrb
       if (window.ParticleOrbAPI === api) delete window.ParticleOrbAPI
+      if (window.__orb === debugAPI) delete window.__orb
       notifyRef.current = () => undefined
       geometry.dispose()
       material.dispose()
+      markerGeometry.dispose()
+      markerMaterial.dispose()
       bloomPass.dispose()
       composer.dispose()
       gpuCompute.dispose()
@@ -883,12 +1228,43 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
       </label>
     ))
 
+  const addTestMarker = () => {
+    const api = window.particleOrb
+    if (!api || markerStates.length >= MAX_MARKERS) return
+    const usedIds = new Set(markerStates.map((marker) => marker.id))
+    const number = Array.from({ length: MAX_MARKERS }, (_, index) => index + 1).find(
+      (candidate) => !usedIds.has(`task-${candidate}`),
+    )
+    if (!number) return
+    const palette = ['#ffffff', '#79a7ff', '#6fffd4', '#ffdc7a', '#ff80b5', '#9b87ff', '#7ce7ff', '#ff9a72']
+    api.markers.set(`task-${number}`, {
+      phase: (number - 1) / MAX_MARKERS,
+      tilt: number % 2 === 0 ? -0.32 : 0.34,
+      color: palette[number - 1],
+    })
+  }
+
+  const createThreeMarkerDemo = () => {
+    const api = window.particleOrb
+    if (!api) return
+    api.markers.clear()
+    const demo = [
+      { id: 'task-1', phase: 0, tilt: 0.2, color: '#ffffff' },
+      { id: 'task-2', phase: 1 / 3, tilt: -0.34, color: '#79a7ff' },
+      { id: 'task-3', phase: 2 / 3, tilt: 0.42, color: '#6fffd4' },
+    ]
+    for (const marker of demo) {
+      api.markers.set(marker.id, { ...marker, size: 15, brightness: 2, orbitRadius: 1.3, speed: 0.2 })
+    }
+    api.trigger('burst', { intensity: 0.55, duration: 0.7 })
+  }
+
   return (
     <div className="particle-orb-shell">
       <div ref={containerRef} className="orb-canvas" role="img" aria-label="可交互的旋转白色粒子球">
         <div className="webgl-fallback">此设备暂不支持浮点纹理粒子模拟</div>
       </div>
-      <details className="noise-panel" open>
+      <details className="noise-panel">
         <summary>噪声参数</summary>
         <div className="noise-panel__controls">
           <label className="noise-control noise-control--select">
@@ -913,11 +1289,58 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
           </button>
         </div>
       </details>
-      <details className="noise-panel render-panel" open>
+      <details className="noise-panel render-panel">
         <summary>渲染参数</summary>
         <div className="noise-panel__controls">
           <p className="device-profile">{deviceSummary}</p>
+          <label className="noise-control noise-control--color">
+            <span>人格颜色</span>
+            <output>{personaColor.toUpperCase()}</output>
+            <input
+              type="color"
+              value={personaColor}
+              onChange={(event) => window.particleOrb?.setPersona({ color: event.target.value, transition: 1 })}
+            />
+          </label>
           {renderControlRows(renderRows)}
+        </div>
+      </details>
+      <details className="noise-panel marker-panel" open>
+        <summary>任务光点测试 · {markerStates.length}/{MAX_MARKERS}</summary>
+        <div className="noise-panel__controls marker-panel__controls">
+          <div className="marker-panel__actions">
+            <button type="button" onClick={createThreeMarkerDemo}>生成 3 个任务</button>
+            <button type="button" onClick={addTestMarker} disabled={markerStates.length >= MAX_MARKERS}>添加光点</button>
+            <button type="button" onClick={() => window.particleOrb?.markers.clear()} disabled={!markerStates.length}>清空</button>
+          </div>
+          {markerStates.map((marker) => (
+            <div className="marker-control" key={marker.id}>
+              <span>{marker.id}</span>
+              <input
+                aria-label={`${marker.id} 颜色`}
+                type="color"
+                value={marker.color}
+                onChange={(event) => window.particleOrb?.markers.set(marker.id, { color: event.target.value })}
+              />
+              <input
+                aria-label={`${marker.id} 亮度`}
+                type="range"
+                min="0"
+                max="4"
+                step="0.1"
+                value={marker.brightness}
+                onChange={(event) => window.particleOrb?.markers.set(marker.id, { brightness: Number(event.target.value) })}
+              />
+              <button
+                type="button"
+                onClick={() => window.particleOrb?.markers.flash(marker.id, { intensity: 2.5, duration: 1 })}
+              >
+                闪一下
+              </button>
+              <button type="button" onClick={() => window.particleOrb?.markers.remove(marker.id)}>删除</button>
+            </div>
+          ))}
+          {!markerStates.length && <p className="marker-panel__empty">点击“生成 3 个任务”观察外圈环绕与单点闪烁。</p>}
         </div>
       </details>
     </div>

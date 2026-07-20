@@ -158,6 +158,18 @@ body {
   box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.12);
 }
 
+.noise-control--color input[type='color'] {
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 24px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  cursor: pointer;
+  appearance: auto;
+  background: transparent;
+}
+
 .noise-control--select select {
   min-width: 104px;
   padding: 5px 24px 5px 8px;
@@ -182,6 +194,84 @@ body {
 .noise-panel__reset:hover {
   color: #fff;
   background: rgba(255, 255, 255, 0.11);
+}
+
+.marker-panel {
+  top: auto;
+  right: auto;
+  bottom: 18px;
+  left: 50%;
+  width: min(430px, calc(100% - 36px));
+  transform: translateX(-50%);
+}
+
+.marker-panel__controls {
+  gap: 8px;
+}
+
+.marker-panel__actions {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 0.7fr;
+  gap: 6px;
+  padding-top: 9px;
+}
+
+.marker-panel button {
+  padding: 7px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 7px;
+  color: rgba(255, 255, 255, 0.8);
+  background: rgba(255, 255, 255, 0.07);
+  cursor: pointer;
+  font: inherit;
+}
+
+.marker-panel button:hover:not(:disabled) {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.13);
+}
+
+.marker-panel button:disabled {
+  cursor: default;
+  opacity: 0.38;
+}
+
+.marker-control {
+  display: grid;
+  grid-template-columns: minmax(58px, 1fr) 28px minmax(64px, 1.2fr) auto auto;
+  gap: 7px;
+  align-items: center;
+}
+
+.marker-control > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.marker-control input[type='color'] {
+  width: 28px;
+  height: 25px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  background: transparent;
+}
+
+.marker-control input[type='range'] {
+  width: 100%;
+  accent-color: #fff;
+}
+
+.marker-control button {
+  padding: 5px 7px;
+}
+
+.marker-panel__empty {
+  margin: 2px 0 0;
+  color: rgba(255, 255, 255, 0.52);
+  line-height: 1.5;
 }
 
 .webgl-fallback {
@@ -223,6 +313,20 @@ body {
     right: auto;
     bottom: 10px;
     left: 10px;
+  }
+
+  .marker-panel {
+    top: auto;
+    right: auto;
+    bottom: 10px;
+    left: 50%;
+    width: calc(100% - 20px);
+    max-height: 46%;
+  }
+
+  .marker-control {
+    grid-template-columns: minmax(52px, 1fr) 28px minmax(52px, 1fr) auto auto;
+    gap: 5px;
   }
 }
 
