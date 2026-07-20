@@ -29,6 +29,55 @@
 - iPad：12,500 粒子，45 FPS，DPR 上限 1.35，Bloom 强度缩放 78%。
 - PC：16,000 粒子，60 FPS，DPR 上限 2，完整 Bloom 效果。
 
+## 程序化接口
+
+### JS API
+
+```js
+// 音量范围 0–1，内部会平滑映射到噪声幅度与扰动力
+window.particleOrb.setAudioLevel(0.72)
+
+// 一次性能量爆发，短时提升速度、扰动和 Bloom
+window.particleOrb.trigger('burst', { intensity: 1.2, duration: 0.8 })
+
+// 内置预设：idle / listening / speaking / thinking
+window.particleOrb.setPreset('speaking')
+
+window.particleOrb.setParams({
+  noiseType: 1,
+  noiseAmplitude: 0.8,
+  particleOpacity: 0.7,
+})
+```
+
+### postMessage
+
+```js
+iframe.contentWindow.postMessage({
+  source: 'particle-orb-control',
+  version: 1,
+  type: 'audio-level',
+  payload: { level: 0.72 },
+  requestId: 'audio-1042',
+}, '*')
+
+iframe.contentWindow.postMessage({
+  source: 'particle-orb-control',
+  version: 1,
+  type: 'trigger',
+  payload: { name: 'burst', intensity: 1.2, duration: 0.8 },
+}, '*')
+
+iframe.contentWindow.postMessage({
+  source: 'particle-orb-control',
+  version: 1,
+  type: 'set-preset',
+  payload: { name: 'listening' },
+}, '*')
+```
+
+支持的命令：`set-params`、`audio-level`、`trigger`、`set-preset`、`get-state`、`reset`。组件会返回 `ready`、`state`、`paramsChanged`、`triggered` 和 `error` 事件。接入生产父页后，可通过 `window.particleOrb.setAllowedOrigins([...])` 限制允许控制粒子球的来源。
+
 ## 本地运行
 
 ```bash

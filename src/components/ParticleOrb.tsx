@@ -42,6 +42,7 @@ function getDeviceProfile(): DeviceProfile {
 }
 
 type SimulationControls = {
+  noiseType: number
   noiseScale: number
   noiseAmplitude: number
   noiseForce: number
@@ -56,9 +57,11 @@ type SimulationControls = {
   bloomStrength: number
   bloomRadius: number
   bloomThreshold: number
+  particleOpacity: number
 }
 
 const DEFAULT_CONTROLS: SimulationControls = {
+  noiseType: 0,
   noiseScale: 2.35,
   noiseAmplitude: 0.52,
   noiseForce: 0.06,
@@ -73,6 +76,99 @@ const DEFAULT_CONTROLS: SimulationControls = {
   bloomStrength: 0.34,
   bloomRadius: 0.24,
   bloomThreshold: 0.72,
+  particleOpacity: 0.82,
+}
+
+const CONTROL_LIMITS: Record<keyof SimulationControls, readonly [number, number]> = {
+  noiseType: [0, 3],
+  noiseScale: [0.35, 6],
+  noiseAmplitude: [0, 1.4],
+  noiseForce: [0, 0.6],
+  noiseSpeed: [0, 1.5],
+  diffusion: [0, 0.2],
+  lifeSpeed: [0.0005, 0.015],
+  motionSpeed: [0.05, 1.2],
+  attraction: [0.002, 0.03],
+  lifeColor: [0, 1],
+  levelGain: [0.2, 3],
+  levelGamma: [0.35, 2.2],
+  bloomStrength: [0, 2.5],
+  bloomRadius: [0, 1],
+  bloomThreshold: [0, 1.5],
+  particleOpacity: [0, 1],
+}
+
+const BUILT_IN_PRESETS: Record<string, Partial<SimulationControls>> = {
+  idle: {},
+  listening: {
+    noiseType: 0,
+    noiseAmplitude: 0.62,
+    noiseForce: 0.09,
+    noiseSpeed: 0.38,
+    motionSpeed: 0.34,
+    bloomStrength: 0.42,
+  },
+  speaking: {
+    noiseType: 1,
+    noiseAmplitude: 0.82,
+    noiseForce: 0.16,
+    noiseSpeed: 0.72,
+    motionSpeed: 0.62,
+    bloomStrength: 0.72,
+    particleOpacity: 0.94,
+  },
+  thinking: {
+    noiseType: 3,
+    noiseScale: 3.4,
+    noiseAmplitude: 0.7,
+    noiseForce: 0.08,
+    noiseSpeed: 0.18,
+    motionSpeed: 0.25,
+    lifeColor: 1,
+  },
+}
+
+export type ParticleOrbParams = Partial<SimulationControls>
+
+export type ParticleOrbState = {
+  version: 1
+  params: SimulationControls
+  preset: string
+  audioLevel: number
+}
+
+export type ParticleOrbAPI = {
+  readonly version: 1
+  setParams: (params: ParticleOrbParams) => ParticleOrbState
+  getState: () => ParticleOrbState
+  reset: () => ParticleOrbState
+  setAudioLevel: (level: number) => ParticleOrbState
+  trigger: (name: 'burst', options?: { intensity?: number; duration?: number }) => ParticleOrbState
+  setPreset: (name: string) => ParticleOrbState
+  registerPreset: (name: string, params: ParticleOrbParams) => void
+  setAllowedOrigins: (origins: string[]) => void
+}
+
+declare global {
+  interface Window {
+    particleOrb?: ParticleOrbAPI
+    ParticleOrbAPI?: ParticleOrbAPI
+  }
+}
+
+function sanitizeParams(input: unknown): ParticleOrbParams {
+  if (!input || typeof input !== 'object') return {}
+  const result: ParticleOrbParams = {}
+  const writableResult = result as Record<keyof SimulationControls, number | undefined>
+
+  for (const key of Object.keys(CONTROL_LIMITS) as Array<keyof SimulationControls>) {
+    const value = (input as Record<string, unknown>)[key]
+    if (typeof value !== 'number' || !Number.isFinite(value)) continue
+    const [minimum, maximum] = CONTROL_LIMITS[key]
+    const clamped = THREE.MathUtils.clamp(value, minimum, maximum)
+    writableResult[key] = key === 'noiseType' ? Math.round(clamped) : clamped
+  }
+  return result
 }
 
 // Position and velocity are stored in floating-point textures. Both shaders
@@ -87,6 +183,7 @@ const simulationCommon = /* glsl */ `
   uniform float uRepelRadius;
   uniform float uRepelStrength;
   uniform float uNoiseScale;
+  uniform float uNoiseType;
   uniform float uNoiseStrength;
   uniform float uNoiseForce;
   uniform float uNoiseTime;
@@ -123,6 +220,34 @@ const simulationCommon = /* glsl */ `
     return mix(mix(n00, n10, fade.x), mix(n01, n11, fade.x), fade.y) * 1.4142;
   }
 
+  float fieldNoise(vec2 p) {
+    if (uNoiseType < 0.5) {
+      return perlinNoise(p);
+    }
+
+    float amplitude = 0.55;
+    float total = 0.0;
+    float weight = 0.0;
+    for (int octave = 0; octave < 4; octave++) {
+      float value = perlinNoise(p);
+      if (uNoiseType < 1.5) {
+        // FBM: layered smooth detail.
+        total += value * amplitude;
+      } else if (uNoiseType < 2.5) {
+        // Turbulence: folded noise creates lively cellular currents.
+        total += (abs(value) * 2.0 - 0.72) * amplitude;
+      } else {
+        // Ridged noise: narrow high-density veins and wider gaps.
+        float ridge = 1.0 - abs(value);
+        total += (ridge * ridge * 2.0 - 0.9) * amplitude;
+      }
+      weight += amplitude;
+      p = p * 2.03 + vec2(11.7, -7.3);
+      amplitude *= 0.5;
+    }
+    return total / max(weight, 0.0001);
+  }
+
   vec3 homePosition(float index) {
     // Uniform Fibonacci sphere: the base distribution already lives on a
     // proper 3D shell instead of a filled 2D disc.
@@ -138,8 +263,8 @@ const simulationCommon = /* glsl */ `
 
     // Two decorrelated noise samples redistribute particles tangentially.
     vec2 noiseDrift = vec2(uNoiseTime * 0.23, -uNoiseTime * 0.17);
-    float latitudeNoise = perlinNoise(surface.xy * uNoiseScale + noiseDrift);
-    float longitudeNoise = perlinNoise(
+    float latitudeNoise = fieldNoise(surface.xy * uNoiseScale + noiseDrift);
+    float longitudeNoise = fieldNoise(
       surface.yz * uNoiseScale + vec2(17.3, 9.1) - noiseDrift.yx
     );
     latitude += latitudeNoise * uNoiseStrength;
@@ -164,9 +289,9 @@ const simulationCommon = /* glsl */ `
     vec3 noisePosition = normal * uNoiseScale;
     vec2 noiseDrift = vec2(uNoiseTime * 0.19, -uNoiseTime * 0.14);
     vec3 rawNoiseFlow = vec3(
-      perlinNoise(noisePosition.yz + noiseDrift),
-      perlinNoise(noisePosition.zx + vec2(19.4, 7.2) - noiseDrift.yx),
-      perlinNoise(noisePosition.xy + vec2(-8.7, 24.1) + noiseDrift.yx)
+      fieldNoise(noisePosition.yz + noiseDrift),
+      fieldNoise(noisePosition.zx + vec2(19.4, 7.2) - noiseDrift.yx),
+      fieldNoise(noisePosition.xy + vec2(-8.7, 24.1) + noiseDrift.yx)
     );
     vec3 noiseFlow = rawNoiseFlow - normal * dot(rawNoiseFlow, normal);
     float lifeEnvelope = 0.35 + 0.65 * sin(life * 3.14159265);
@@ -176,9 +301,9 @@ const simulationCommon = /* glsl */ `
     // frame. This creates diffusion instead of only moving the home target.
     vec3 finePoint = noisePosition * 2.07 + index * vec3(0.00031, -0.00023, 0.00017);
     vec3 rawDiffusion = vec3(
-      perlinNoise(finePoint.xy + vec2(31.7, 8.4)),
-      perlinNoise(finePoint.yz + vec2(-12.2, 27.9)),
-      perlinNoise(finePoint.zx + vec2(6.8, -17.5))
+      fieldNoise(finePoint.xy + vec2(31.7, 8.4)),
+      fieldNoise(finePoint.yz + vec2(-12.2, 27.9)),
+      fieldNoise(finePoint.zx + vec2(6.8, -17.5))
     );
     vec3 diffusionNoise = rawDiffusion - normal * dot(rawDiffusion, normal);
     acceleration += diffusionNoise * uDiffusion * (0.4 + life * 0.6);
@@ -278,6 +403,7 @@ const particleFragmentShader = /* glsl */ `
   uniform float uLifeColor;
   uniform float uLevelGain;
   uniform float uLevelGamma;
+  uniform float uParticleOpacity;
   varying float vLife;
   varying float vVisible;
 
@@ -286,7 +412,7 @@ const particleFragmentShader = /* glsl */ `
     vec2 point = gl_PointCoord - 0.5;
     float lifeAlpha = smoothstep(0.0, 0.055, vLife)
       * (1.0 - smoothstep(0.84, 1.0, vLife));
-    float alpha = (1.0 - smoothstep(0.34, 0.5, length(point))) * lifeAlpha;
+    float alpha = (1.0 - smoothstep(0.34, 0.5, length(point))) * lifeAlpha * uParticleOpacity;
     if (alpha <= 0.0) discard;
 
     // Select the Life channel as the instance color reference: young points
@@ -362,6 +488,7 @@ function addSimulationUniforms(
   material.uniforms.uDamping = { value: 0.9 }
   material.uniforms.uRepelRadius = { value: radius === 160 ? 60 : 90 }
   material.uniforms.uRepelStrength = { value: 28 }
+  material.uniforms.uNoiseType = { value: controls.noiseType }
   material.uniforms.uNoiseScale = { value: controls.noiseScale }
   material.uniforms.uNoiseStrength = { value: controls.noiseAmplitude }
   material.uniforms.uNoiseForce = { value: controls.noiseForce }
@@ -376,13 +503,39 @@ function addSimulationUniforms(
 export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const controlsRef = useRef<SimulationControls>({ ...DEFAULT_CONTROLS })
+  const presetRef = useRef('idle')
+  const presetsRef = useRef<Record<string, ParticleOrbParams>>({ ...BUILT_IN_PRESETS })
+  const audioTargetRef = useRef(0)
+  const audioCurrentRef = useRef(0)
+  const burstRef = useRef({ energy: 0, decayPerSecond: 1 })
+  const allowedOriginsRef = useRef(new Set(['*']))
+  const notifyRef = useRef<(type: string, state: ParticleOrbState) => void>(() => undefined)
   const [controls, setControls] = useState<SimulationControls>({ ...DEFAULT_CONTROLS })
   const [deviceSummary, setDeviceSummary] = useState('检测设备…')
 
-  const updateControl = (key: keyof SimulationControls, value: number) => {
-    const next = { ...controlsRef.current, [key]: value }
+  const getPublicState = (): ParticleOrbState => ({
+    version: 1,
+    params: { ...controlsRef.current },
+    preset: presetRef.current,
+    audioLevel: audioTargetRef.current,
+  })
+
+  const commitControls = (next: SimulationControls, preset = 'custom') => {
     controlsRef.current = next
+    presetRef.current = preset
     setControls(next)
+    notifyRef.current('paramsChanged', getPublicState())
+  }
+
+  const updateControl = (key: keyof SimulationControls, value: number) => {
+    const sanitized = sanitizeParams({ [key]: value })
+    commitControls({ ...controlsRef.current, ...sanitized })
+  }
+
+  const resetControls = () => {
+    audioTargetRef.current = 0
+    burstRef.current.energy = 0
+    commitControls({ ...DEFAULT_CONTROLS }, 'idle')
   }
 
   useEffect(() => {
@@ -438,6 +591,7 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
         uLifeColor: { value: controlsRef.current.lifeColor },
         uLevelGain: { value: controlsRef.current.levelGain },
         uLevelGamma: { value: controlsRef.current.levelGamma },
+        uParticleOpacity: { value: controlsRef.current.particleOpacity },
       },
       vertexShader: particleVertexShader,
       fragmentShader: particleFragmentShader,
@@ -468,6 +622,103 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
     let lastTime = performance.now()
     let angle = 0
     let noiseTime = 0
+
+    const emitState = (type: string, state: ParticleOrbState) => {
+      const message = { source: 'particle-orb', version: 1, type, payload: state }
+      window.dispatchEvent(new CustomEvent(`particle-orb:${type}`, { detail: state }))
+      if (window.parent !== window) window.parent.postMessage(message, '*')
+    }
+    notifyRef.current = emitState
+
+    const api: ParticleOrbAPI = {
+      version: 1,
+      setParams: (params) => {
+        commitControls({ ...controlsRef.current, ...sanitizeParams(params) })
+        return getPublicState()
+      },
+      getState: getPublicState,
+      reset: () => {
+        audioTargetRef.current = 0
+        burstRef.current.energy = 0
+        commitControls({ ...DEFAULT_CONTROLS }, 'idle')
+        return getPublicState()
+      },
+      setAudioLevel: (level) => {
+        audioTargetRef.current = THREE.MathUtils.clamp(Number.isFinite(level) ? level : 0, 0, 1)
+        return getPublicState()
+      },
+      trigger: (name, options = {}) => {
+        if (name !== 'burst') throw new Error(`Unsupported particle orb trigger: ${name}`)
+        const intensity = THREE.MathUtils.clamp(options.intensity ?? 1, 0, 2)
+        const duration = THREE.MathUtils.clamp(options.duration ?? 0.75, 0.1, 5)
+        burstRef.current.energy = Math.max(burstRef.current.energy, intensity)
+        burstRef.current.decayPerSecond = intensity / duration
+        emitState('triggered', getPublicState())
+        return getPublicState()
+      },
+      setPreset: (name) => {
+        const preset = presetsRef.current[name]
+        if (!preset) throw new Error(`Unknown particle orb preset: ${name}`)
+        commitControls({ ...DEFAULT_CONTROLS, ...sanitizeParams(preset) }, name)
+        return getPublicState()
+      },
+      registerPreset: (name, params) => {
+        if (!name || name.length > 64) throw new Error('Preset name must contain 1–64 characters')
+        presetsRef.current[name] = sanitizeParams(params)
+      },
+      setAllowedOrigins: (origins) => {
+        allowedOriginsRef.current = new Set(origins.filter((origin) => typeof origin === 'string' && origin.length > 0))
+      },
+    }
+
+    const replyToMessage = (event: MessageEvent, type: string, payload: unknown, requestId?: unknown) => {
+      if (!event.source || !('postMessage' in event.source)) return
+      const targetOrigin = event.origin === 'null' ? '*' : event.origin
+      ;(event.source as Window).postMessage(
+        { source: 'particle-orb', version: 1, type, requestId, payload },
+        targetOrigin,
+      )
+    }
+
+    const handleMessage = (event: MessageEvent) => {
+      const allowed = allowedOriginsRef.current
+      if (!allowed.has('*') && !allowed.has(event.origin)) return
+      const data = event.data as Record<string, unknown> | null
+      if (!data || data.source !== 'particle-orb-control' || data.version !== 1 || typeof data.type !== 'string') return
+
+      const type = data.type.replace(/^particle-orb:/, '')
+      const payload = data.payload
+      try {
+        let state: ParticleOrbState
+        if (type === 'setParams' || type === 'set-params') {
+          state = api.setParams((payload ?? {}) as ParticleOrbParams)
+        } else if (type === 'setAudioLevel' || type === 'audio-level') {
+          const level = typeof payload === 'number' ? payload : Number((payload as { level?: unknown })?.level)
+          state = api.setAudioLevel(level)
+        } else if (type === 'trigger') {
+          const triggerPayload = (payload ?? {}) as { name?: unknown; intensity?: number; duration?: number }
+          state = api.trigger(String(triggerPayload.name ?? 'burst') as 'burst', triggerPayload)
+        } else if (type === 'setPreset' || type === 'set-preset') {
+          const name = typeof payload === 'string' ? payload : String((payload as { name?: unknown })?.name ?? '')
+          state = api.setPreset(name)
+        } else if (type === 'reset') {
+          state = api.reset()
+        } else if (type === 'getState' || type === 'get-state') {
+          state = api.getState()
+        } else {
+          throw new Error(`Unsupported particle orb message: ${type}`)
+        }
+        replyToMessage(event, 'state', state, data.requestId)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown particle orb error'
+        replyToMessage(event, 'error', { message }, data.requestId)
+      }
+    }
+
+    window.particleOrb = api
+    window.ParticleOrbAPI = api
+    window.addEventListener('message', handleMessage)
+    emitState('ready', api.getState())
 
     const syncPointerUniforms = () => {
       for (const variable of [positionVariable, velocityVariable]) {
@@ -518,17 +769,30 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
       const delta = Math.min((now - lastTime) / 1000, 1 / 30)
       lastTime = now
       const currentControls = controlsRef.current
-      const frameScale = delta * 60 * currentControls.motionSpeed
+      const audioSmoothing = 1 - Math.exp(-12 * delta)
+      audioCurrentRef.current += (audioTargetRef.current - audioCurrentRef.current) * audioSmoothing
+      const audioLevel = audioCurrentRef.current
+      const burstEnergy = burstRef.current.energy
+      burstRef.current.energy = Math.max(0, burstEnergy - burstRef.current.decayPerSecond * delta)
+
+      const effectiveMotionSpeed = currentControls.motionSpeed + burstEnergy * 0.9
+      const effectiveNoiseAmplitude = Math.min(1.4, currentControls.noiseAmplitude + audioLevel * 0.5)
+      const effectiveNoiseForce = Math.min(
+        0.9,
+        currentControls.noiseForce + audioLevel * 0.18 + burstEnergy * 0.24,
+      )
+      const frameScale = delta * 60 * effectiveMotionSpeed
       angle += 0.01 * frameScale
-      noiseTime += delta * currentControls.noiseSpeed
+      noiseTime += delta * (currentControls.noiseSpeed + burstEnergy * 0.45)
 
       if (!computeError) {
         for (const variable of [positionVariable, velocityVariable]) {
           variable.material.uniforms.uAngle.value = angle
           variable.material.uniforms.uNoiseTime.value = noiseTime
+          variable.material.uniforms.uNoiseType.value = currentControls.noiseType
           variable.material.uniforms.uNoiseScale.value = currentControls.noiseScale
-          variable.material.uniforms.uNoiseStrength.value = currentControls.noiseAmplitude
-          variable.material.uniforms.uNoiseForce.value = currentControls.noiseForce
+          variable.material.uniforms.uNoiseStrength.value = effectiveNoiseAmplitude
+          variable.material.uniforms.uNoiseForce.value = effectiveNoiseForce
           variable.material.uniforms.uDiffusion.value = currentControls.diffusion
           variable.material.uniforms.uLifeSpeed.value = currentControls.lifeSpeed
           variable.material.uniforms.uAttraction.value = currentControls.attraction
@@ -539,9 +803,11 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
       }
 
       material.uniforms.uLifeColor.value = currentControls.lifeColor
-      material.uniforms.uLevelGain.value = currentControls.levelGain
+      material.uniforms.uLevelGain.value = currentControls.levelGain + burstEnergy * 0.22
       material.uniforms.uLevelGamma.value = currentControls.levelGamma
-      bloomPass.strength = currentControls.bloomStrength * profile.bloomScale
+      material.uniforms.uParticleOpacity.value = currentControls.particleOpacity
+      bloomPass.strength =
+        (currentControls.bloomStrength + audioLevel * 0.12 + burstEnergy * 1.1) * profile.bloomScale
       bloomPass.radius = currentControls.bloomRadius
       bloomPass.threshold = currentControls.bloomThreshold
       composer.render()
@@ -556,6 +822,10 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
       container.removeEventListener('pointerdown', movePointer)
       container.removeEventListener('pointerleave', leavePointer)
       container.removeEventListener('pointerup', leavePointer)
+      window.removeEventListener('message', handleMessage)
+      if (window.particleOrb === api) delete window.particleOrb
+      if (window.ParticleOrbAPI === api) delete window.ParticleOrbAPI
+      notifyRef.current = () => undefined
       geometry.dispose()
       material.dispose()
       bloomPass.dispose()
@@ -584,6 +854,7 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
   ]
 
   const renderRows: typeof simulationRows = [
+    { key: 'particleOpacity', label: '粒子透明度', min: 0, max: 1, step: 0.01 },
     { key: 'lifeColor', label: '生命色彩', min: 0, max: 1, step: 0.01 },
     { key: 'levelGain', label: 'Level 亮度', min: 0.2, max: 3, step: 0.01 },
     { key: 'levelGamma', label: 'Level Gamma', min: 0.35, max: 2.2, step: 0.01 },
@@ -620,15 +891,23 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
       <details className="noise-panel" open>
         <summary>噪声参数</summary>
         <div className="noise-panel__controls">
+          <label className="noise-control noise-control--select">
+            <span>噪声类型</span>
+            <select
+              value={controls.noiseType}
+              onChange={(event) => updateControl('noiseType', Number(event.target.value))}
+            >
+              <option value={0}>Perlin</option>
+              <option value={1}>FBM</option>
+              <option value={2}>Turbulence</option>
+              <option value={3}>Ridged</option>
+            </select>
+          </label>
           {renderControlRows(simulationRows)}
           <button
             className="noise-panel__reset"
             type="button"
-            onClick={() => {
-              const next = { ...DEFAULT_CONTROLS }
-              controlsRef.current = next
-              setControls(next)
-            }}
+            onClick={resetControls}
           >
             重置参数
           </button>

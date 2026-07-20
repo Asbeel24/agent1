@@ -158,6 +158,17 @@ body {
   box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.12);
 }
 
+.noise-control--select select {
+  min-width: 104px;
+  padding: 5px 24px 5px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  outline: none;
+  color: #fff;
+  background: #101719;
+  font: inherit;
+}
+
 .noise-panel__reset {
   padding: 7px 9px;
   border: 1px solid rgba(255, 255, 255, 0.14);
