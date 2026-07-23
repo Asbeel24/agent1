@@ -1111,7 +1111,7 @@ body:has(.interactive-target:hover) .field-cursor {
     position: absolute;
     top: 1.4rem;
     right: 1.25rem;
-    width: min(72vw, 17.5rem);
+    width: min(calc(100vw - 6.5rem), 17.5rem);
     justify-content: space-between;
     gap: 0;
   }
@@ -1142,18 +1142,33 @@ body:has(.interactive-target:hover) .field-cursor {
   }
 
   .language-switcher {
-    top: 31%;
-    right: 1rem;
-    width: 6.8rem;
-    translate: 0 -50%;
+    top: 5.5rem;
+    right: auto;
+    left: 50%;
+    display: grid;
+    width: min(27rem, calc(100vw - 2.5rem));
+    grid-template-columns: minmax(0, 1fr) 2.8rem minmax(0, 1fr);
+    align-items: stretch;
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--scene-accent) 22%, var(--line));
+    background: rgb(3 6 9 / 78%);
+    box-shadow: 0 1rem 3rem rgb(0 0 0 / 28%);
+    backdrop-filter: blur(16px);
+    translate: -50% 0;
   }
 
   .language-option {
-    padding-left: 0.7rem;
+    min-height: 3.8rem;
+    padding: 0.65rem 0.8rem;
   }
 
   .language-swap {
-    width: 2.3rem;
+    width: 100%;
+    height: 100%;
+    min-height: 3.8rem;
+    margin: 0;
+    border-right: 1px solid var(--line);
+    border-left: 1px solid var(--line);
   }
 
   .scene-copy {
@@ -1268,25 +1283,33 @@ body:has(.interactive-target:hover) .field-cursor {
   }
 
   .language-switcher {
-    top: 5.15rem;
-    right: auto;
-    left: 50%;
-    display: grid;
-    width: auto;
-    max-width: calc(100vw - 2.5rem);
-    grid-template-columns: minmax(5.6rem, auto) 2.3rem minmax(5.6rem, auto);
-    align-items: end;
-    border-bottom: 1px solid var(--line);
-    border-left: 0;
-    translate: -50% 0;
+    top: 4.9rem;
+    width: calc(100vw - 2rem);
+    grid-template-columns: minmax(0, 1fr) 2.5rem minmax(0, 1fr);
   }
 
   .language-option {
-    padding: 0 0 0.55rem;
+    min-height: 3.45rem;
+    padding: 0.55rem 0.65rem;
   }
 
   .language-option:last-child {
     text-align: right;
+  }
+
+  .language-option span {
+    overflow: hidden;
+    font-size: 0.72rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .language-swap {
+    min-height: 3.45rem;
+  }
+
+  .experience-shell[data-scene='translate'] .scene-copy {
+    top: 9.35rem;
   }
 
   .scene-eyebrow {
