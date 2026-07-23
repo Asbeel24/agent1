@@ -1,14 +1,14 @@
 :root {
   color: #e9e9e5;
-  background: #090a0c;
+  background: #000;
   font-family: 'Instrument Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   font-synthesis: none;
   color-scheme: dark;
   --font-display: 'Instrument Sans', 'PingFang SC', sans-serif;
   --font-cn-display: 'Alibaba PuHuiTi 3.0', 'Alibaba PuHuiTi', 'PingFang SC', 'Hiragino Sans GB', sans-serif;
   --font-mono: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
-  --canvas: #090a0c;
-  --canvas-deep: #020305;
+  --canvas: #000;
+  --canvas-deep: #000;
   --ink: #e9e9e5;
   --ink-soft: rgba(233, 233, 229, 0.66);
   --ink-faint: rgba(233, 233, 229, 0.38);
@@ -93,9 +93,7 @@ a:focus-visible {
   overscroll-behavior: none;
   touch-action: none;
   user-select: none;
-  background:
-    radial-gradient(circle at 50% 48%, #000 0%, #050608 34%, rgba(9, 10, 12, 0.96) 67%),
-    var(--canvas);
+  background: var(--canvas);
   transition: background-color 900ms var(--ease-expo);
 }
 
@@ -518,7 +516,6 @@ a:focus-visible {
   inset: -30%;
   width: auto;
   height: auto;
-  mix-blend-mode: screen;
   mask-image: radial-gradient(circle, #000 0 88%, rgba(0, 0, 0, 0.98) 94%, transparent 100%);
   transform-origin: center;
   transition:

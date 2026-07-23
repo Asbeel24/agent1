@@ -11,6 +11,7 @@ const DESKTOP_PARTICLE_COUNT = 16000
 const MAX_MARKERS = 8
 const LOUD_LEVEL_GAMMA = 0.74
 const RENDER_OVERSCAN = 1.6
+const ORB_BACKGROUND_COLOR = 0x000000
 
 type DeviceProfile = {
   label: string
@@ -728,6 +729,7 @@ export function ParticleOrb({
     const projectionHalfExtent = radius * 1.32 * RENDER_OVERSCAN
     const pixelRatio = Math.min(window.devicePixelRatio, profile.maxDpr)
     const scene = new THREE.Scene()
+    scene.background = new THREE.Color(ORB_BACKGROUND_COLOR)
     const camera = new THREE.OrthographicCamera(
       -projectionHalfExtent,
       projectionHalfExtent,
@@ -747,7 +749,7 @@ export function ParticleOrb({
     }
 
     renderer.setPixelRatio(pixelRatio)
-    renderer.setClearColor(0x000000, 0)
+    renderer.setClearColor(ORB_BACKGROUND_COLOR, 1)
     renderer.outputColorSpace = THREE.SRGBColorSpace
     container.appendChild(renderer.domElement)
 
