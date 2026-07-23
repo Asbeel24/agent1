@@ -4,6 +4,7 @@ import { ParticleOrb } from './components/ParticleOrb'
 import { languages, personas, scenes, tasks, type SceneId } from './data/experience'
 import { useMeetingTransition } from './hooks/useMeetingTransition'
 import { useMicrophoneInput } from './hooks/useMicrophoneInput'
+import { useRecordingSoundEffects } from './hooks/useRecordingSoundEffects'
 
 type VoiceState = 'idle' | 'listening'
 
@@ -24,6 +25,7 @@ export default function App() {
   const activeScene = scenes.find((scene) => scene.id === sceneId) ?? scenes[1]
   const activePersona = personas.find((persona) => persona.id === personaId) ?? personas[0]
   const activeColor = sceneId === 'personas' ? activePersona.color : activeScene.color
+  const { playRecordingStart, playRecordingStop } = useRecordingSoundEffects()
   const { microphoneState, recordingSeconds } = useMicrophoneInput({
     active: voiceState === 'listening',
     rootRef,
@@ -126,6 +128,7 @@ export default function App() {
   }, [taskOpen])
 
   const selectScene = (nextScene: SceneId) => {
+    if (voiceState === 'listening') playRecordingStop()
     setSceneId(nextScene)
     setPersonaOpen(nextScene === 'personas')
     setMeetingTextOpen(false)
@@ -484,10 +487,14 @@ export default function App() {
 
   const cycleVoiceState = () => {
     if (microphoneState === 'requesting') return
-    setVoiceState((current) => {
-      if (current === 'listening') return 'idle'
-      return 'listening'
-    })
+    if (voiceState === 'listening') {
+      playRecordingStop()
+      setVoiceState('idle')
+      return
+    }
+
+    playRecordingStart()
+    setVoiceState('listening')
   }
 
   const handleOrbActivation = () => {
