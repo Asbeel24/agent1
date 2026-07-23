@@ -55,9 +55,13 @@ export type TaskStatus =
   | 'draft'
   | 'awaiting_details'
   | 'ready'
+  | 'queued'
+  | 'planning'
+  | 'pending'
   | 'running'
+  | 'retrying'
   | 'awaiting_confirmation'
-  | 'completed'
+  | 'succeeded'
   | 'failed'
   | 'cancelled'
 
@@ -74,7 +78,7 @@ export type ClientEventMap = {
   [CLIENT_EVENTS.translationStop]: Record<string, never>
   [CLIENT_EVENTS.taskCancel]: {
     task_id: string
-    reason: 'task_ink' | string
+    reason: string
   }
   [CLIENT_EVENTS.reviewEvidence]: {
     candidate_id: string
@@ -206,15 +210,19 @@ export type ServerEventMap = {
   }
 }
 
-type EventUnion<EventMap> = {
+/**
+ * Canonical event representation inside the frontend. The transport adapter
+ * must convert the backend's confirmed wire envelope into this shape.
+ */
+type CanonicalEventUnion<EventMap> = {
   [Name in keyof EventMap & string]: {
     type: Name
     data: EventMap[Name]
   }
 }[keyof EventMap & string]
 
-export type Agent1ClientEvent = EventUnion<ClientEventMap>
-export type Agent1ServerEvent = EventUnion<ServerEventMap>
+export type Agent1ClientEvent = CanonicalEventUnion<ClientEventMap>
+export type Agent1ServerEvent = CanonicalEventUnion<ServerEventMap>
 
 export function createClientEvent<Name extends keyof ClientEventMap & string>(
   type: Name,
@@ -223,15 +231,125 @@ export function createClientEvent<Name extends keyof ClientEventMap & string>(
   return { type, data } as Extract<Agent1ClientEvent, { type: Name }>
 }
 
-const serverEventNames = new Set<string>(Object.values(SERVER_EVENTS))
+type UnknownRecord = Record<string, unknown>
+
+const taskStatuses = new Set<string>([
+  'draft',
+  'awaiting_details',
+  'ready',
+  'queued',
+  'planning',
+  'pending',
+  'running',
+  'retrying',
+  'awaiting_confirmation',
+  'succeeded',
+  'failed',
+  'cancelled',
+])
+
+const translationStreamStates = new Set<string>([
+  'armed',
+  'ready',
+  'recovering',
+  'recovered',
+  'unavailable',
+  'stopped',
+])
+
+function isRecord(value: unknown): value is UnknownRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function hasString(record: UnknownRecord, key: string): boolean {
+  return typeof record[key] === 'string'
+}
+
+function hasNumber(record: UnknownRecord, key: string): boolean {
+  return typeof record[key] === 'number' && Number.isFinite(record[key])
+}
+
+function hasBoolean(record: UnknownRecord, key: string): boolean {
+  return typeof record[key] === 'boolean'
+}
+
+function isTaskStep(value: unknown): value is TaskStep {
+  return isRecord(value) && hasString(value, 'id')
+}
+
+function isTaskSnapshot(value: unknown): value is TaskSnapshot {
+  if (!isRecord(value) || !hasString(value, 'id')) return false
+  const status = value.status
+  if (typeof status !== 'string' || !taskStatuses.has(status)) return false
+  return value.steps === undefined || (Array.isArray(value.steps) && value.steps.every(isTaskStep))
+}
+
+function isTranslationSegment(value: unknown): value is TranslationSegment {
+  return (
+    isRecord(value) &&
+    hasString(value, 'stream_id') &&
+    hasNumber(value, 'sequence') &&
+    hasString(value, 'text') &&
+    hasBoolean(value, 'final')
+  )
+}
 
 export function isAgent1ServerEvent(value: unknown): value is Agent1ServerEvent {
-  if (!value || typeof value !== 'object') return false
-  const candidate = value as { type?: unknown; data?: unknown }
-  return (
-    typeof candidate.type === 'string' &&
-    serverEventNames.has(candidate.type) &&
-    typeof candidate.data === 'object' &&
-    candidate.data !== null
-  )
+  if (!isRecord(value) || typeof value.type !== 'string' || !isRecord(value.data)) return false
+  const data = value.data
+
+  switch (value.type) {
+    case SERVER_EVENTS.connected:
+      return data.session_id === undefined || hasString(data, 'session_id')
+    case SERVER_EVENTS.error:
+      return hasString(data, 'message')
+    case SERVER_EVENTS.inputTranscript:
+      return hasString(data, 'text') && hasBoolean(data, 'final')
+    case SERVER_EVENTS.onboardingStarted:
+      return hasNumber(data, 'total_questions')
+    case SERVER_EVENTS.onboardingQuestion:
+      return hasString(data, 'question')
+    case SERVER_EVENTS.onboardingCompleted:
+      return data.profile_summary === undefined || hasString(data, 'profile_summary')
+    case SERVER_EVENTS.translationSource:
+    case SERVER_EVENTS.translationTarget:
+      return isTranslationSegment(data)
+    case SERVER_EVENTS.translationState:
+      return typeof data.state === 'string' && translationStreamStates.has(data.state)
+    case SERVER_EVENTS.taskSnapshot:
+      return Array.isArray(data.tasks) && data.tasks.every(isTaskSnapshot)
+    case SERVER_EVENTS.taskDraftCreated:
+    case SERVER_EVENTS.taskAwaitingDetails:
+    case SERVER_EVENTS.taskReady:
+    case SERVER_EVENTS.taskStarted:
+    case SERVER_EVENTS.taskCompleted:
+    case SERVER_EVENTS.taskFailed:
+    case SERVER_EVENTS.taskCancelled:
+      return isTaskSnapshot(data)
+    case SERVER_EVENTS.taskStepsCreated:
+      return (
+        hasString(data, 'task_id') &&
+        Array.isArray(data.steps) &&
+        data.steps.every(isTaskStep)
+      )
+    case SERVER_EVENTS.taskStepStarted:
+    case SERVER_EVENTS.taskStepCompleted:
+      return hasString(data, 'task_id') && isTaskStep(data.step)
+    case SERVER_EVENTS.taskStepProgress:
+      return (
+        hasString(data, 'task_id') &&
+        hasString(data, 'step_id') &&
+        hasNumber(data, 'progress')
+      )
+    case SERVER_EVENTS.taskProgress:
+      return hasString(data, 'task_id') && hasNumber(data, 'progress')
+    case SERVER_EVENTS.taskResultPending:
+      return hasString(data, 'task_id')
+    case SERVER_EVENTS.ttsSentenceStart:
+      return hasString(data, 'text')
+    case SERVER_EVENTS.ttsSentenceEnd:
+      return data.sentence_id === undefined || hasString(data, 'sentence_id')
+    default:
+      return false
+  }
 }

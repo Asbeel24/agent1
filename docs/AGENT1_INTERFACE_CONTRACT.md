@@ -13,6 +13,8 @@
 | Binary audio | 麦克风 PCM/编码音频上行与 TTS 音频下行 | 文档未给出编码、采样率、帧头及背压策略，暂不实现 |
 | Orb JS API | 声强、横滑、preset、人格色、marker、burst | 已由 `window.particleOrb` 实现，不属于后端协议 |
 
+`src/protocol/agent1.ts` 使用 `{ type, data }` 作为前端内部的标准事件形态。它不是对 WebSocket 外层格式的假设；网络适配层必须在后端确认协议后，将真实 wire envelope 转换为该形态。
+
 ## 2. WebSocket 事件
 
 ### Client → Server
@@ -80,9 +82,13 @@ type TaskSnapshot = {
     | 'draft'
     | 'awaiting_details'
     | 'ready'
+    | 'queued'
+    | 'planning'
+    | 'pending'
     | 'running'
+    | 'retrying'
     | 'awaiting_confirmation'
-    | 'completed'
+    | 'succeeded'
     | 'failed'
     | 'cancelled'
   context?: string
@@ -118,4 +124,4 @@ type TaskSnapshot = {
 - 球体颜色只表达人格。翻译/会议场景色由 DOM 承担。
 - 任务 marker 最多 6 个，另预留 1 个记忆 marker 和 1 个采集 marker。
 - 录音停止后必须关闭 MediaStream、AudioContext、rAF，并立刻写入 `setAudioLevel(0)`。
-- WebSocket 事件进入 UI 前必须先过运行时判别；未知事件记录但不得让页面崩溃。
+- WebSocket 事件进入 UI 前必须先过事件名与 payload 字段级运行时判别；未知或畸形事件记录但不得让页面崩溃。
