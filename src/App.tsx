@@ -635,18 +635,9 @@ export default function App() {
           className="orb-stage interactive-target"
           data-voice-state={voiceState}
           data-microphone-state={microphoneState}
-          role="button"
-          tabIndex={0}
-          aria-label={voiceState === 'idle' ? '点击球体开始录音' : '点击球体切换录音状态'}
           onClick={(event) => {
             if (event.target instanceof Element && event.target.closest('button')) return
             handleOrbActivation()
-          }}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault()
-              handleOrbActivation()
-            }
           }}
         >
           <div className="orb-grid" aria-hidden="true">
