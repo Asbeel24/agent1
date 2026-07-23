@@ -10,6 +10,7 @@ export type OrbMode = 'idle' | 'dialogue' | 'recording' | 'meeting' | 'translate
 const DESKTOP_PARTICLE_COUNT = 16000
 const MAX_MARKERS = 8
 const LOUD_LEVEL_GAMMA = 0.74
+const RENDER_OVERSCAN = 1.6
 
 type DeviceProfile = {
   label: string
@@ -304,31 +305,38 @@ const simulationCommon = /* glsl */ `
   }
 
   float fieldNoise(vec2 p) {
-    if (uNoiseType < 0.5) {
-      return perlinNoise(p);
-    }
-
+    float singlePerlin = perlinNoise(p);
     float amplitude = 0.55;
-    float total = 0.0;
+    float fbmTotal = 0.0;
+    float turbulenceTotal = 0.0;
+    float ridgedTotal = 0.0;
     float weight = 0.0;
     for (int octave = 0; octave < 4; octave++) {
       float value = perlinNoise(p);
-      if (uNoiseType < 1.5) {
-        // FBM: layered smooth detail.
-        total += value * amplitude;
-      } else if (uNoiseType < 2.5) {
-        // Turbulence: folded noise creates lively cellular currents.
-        total += (abs(value) * 2.0 - 0.72) * amplitude;
-      } else {
-        // Ridged noise: narrow high-density veins and wider gaps.
-        float ridge = 1.0 - abs(value);
-        total += (ridge * ridge * 2.0 - 0.9) * amplitude;
-      }
+      fbmTotal += value * amplitude;
+      turbulenceTotal += (abs(value) * 2.0 - 0.72) * amplitude;
+      float ridge = 1.0 - abs(value);
+      ridgedTotal += (ridge * ridge * 2.0 - 0.9) * amplitude;
       weight += amplitude;
       p = p * 2.03 + vec2(11.7, -7.3);
       amplitude *= 0.5;
     }
-    return total / max(weight, 0.0001);
+
+    float fbmNoise = fbmTotal / max(weight, 0.0001);
+    float turbulenceNoise = turbulenceTotal / max(weight, 0.0001);
+    float ridgedNoise = ridgedTotal / max(weight, 0.0001);
+    float mode = clamp(uNoiseType, 0.0, 3.0);
+
+    // Adjacent modes share the exact value at their boundary. Preset changes
+    // can therefore interpolate through Perlin → FBM → turbulence → ridged
+    // without replacing the particle field in a single frame.
+    if (mode < 1.0) {
+      return mix(singlePerlin, fbmNoise, smoothstep(0.0, 1.0, mode));
+    }
+    if (mode < 2.0) {
+      return mix(fbmNoise, turbulenceNoise, smoothstep(1.0, 2.0, mode));
+    }
+    return mix(turbulenceNoise, ridgedNoise, smoothstep(2.0, 3.0, mode));
   }
 
   vec3 homePosition(float index) {
@@ -626,7 +634,7 @@ function addSimulationUniforms(
   material.uniforms.uAttraction = { value: controls.attraction }
   material.uniforms.uDamping = { value: 0.9 }
   material.uniforms.uPointerRadius = { value: radius * 0.58 }
-  material.uniforms.uPointerStrength = { value: radius === 160 ? 3.2 : 4.2 }
+  material.uniforms.uPointerStrength = { value: radius === 160 ? 2 : 2.6 }
   material.uniforms.uNoiseType = { value: controls.noiseType }
   material.uniforms.uNoiseScale = { value: controls.noiseScale }
   material.uniforms.uNoiseStrength = { value: controls.noiseAmplitude }
@@ -714,7 +722,10 @@ export function ParticleOrb({
     setDeviceSummary(`${profile.label} · ${profile.particleCount.toLocaleString()} 粒子 · ${profile.targetFps} FPS`)
     const isMobile = profile.label === '手机'
     const radius = isMobile ? 160 : 250
-    const projectionHalfExtent = radius * 1.32
+    // The canvas is deliberately oversized in CSS so orbiting task markers
+    // and Bloom never meet a hard WebGL edge. Scaling the projection by the
+    // same factor keeps the visible sphere diameter unchanged.
+    const projectionHalfExtent = radius * 1.32 * RENDER_OVERSCAN
     const pixelRatio = Math.min(window.devicePixelRatio, profile.maxDpr)
     const scene = new THREE.Scene()
     const camera = new THREE.OrthographicCamera(
@@ -1109,11 +1120,7 @@ export function ParticleOrb({
       const currentControls = renderedControlsRef.current
       const parameterSmoothing = 1 - Math.exp(-9 * delta)
       for (const key of Object.keys(CONTROL_LIMITS) as Array<keyof SimulationControls>) {
-        if (key === 'noiseType') {
-          currentControls[key] = targetControls[key]
-        } else {
-          currentControls[key] += (targetControls[key] - currentControls[key]) * parameterSmoothing
-        }
+        currentControls[key] += (targetControls[key] - currentControls[key]) * parameterSmoothing
       }
       const audioSmoothing = 1 - Math.exp(-12 * delta)
       audioCurrentRef.current += (audioTargetRef.current - audioCurrentRef.current) * audioSmoothing

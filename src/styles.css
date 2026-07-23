@@ -513,10 +513,13 @@ a:focus-visible {
 }
 
 .particle-orb-shell {
-  position: relative;
+  position: absolute;
   z-index: 1;
+  inset: -30%;
+  width: auto;
+  height: auto;
   mix-blend-mode: screen;
-  mask-image: radial-gradient(circle, #000 0 82%, rgba(0, 0, 0, 0.96) 88%, transparent 100%);
+  mask-image: radial-gradient(circle, #000 0 88%, rgba(0, 0, 0, 0.98) 94%, transparent 100%);
   transform-origin: center;
   transition:
     opacity 700ms var(--ease-expo),
@@ -524,17 +527,85 @@ a:focus-visible {
     transform 700ms var(--ease-expo);
 }
 
+.meeting-transcript {
+  position: absolute;
+  z-index: 5;
+  top: 15%;
+  left: 50%;
+  width: min(43rem, calc(100vw - 10rem));
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: clamp(0.82rem, 1.15vw, 1.05rem);
+  line-height: 1.58;
+  letter-spacing: -0.025em;
+  opacity: 0;
+  visibility: hidden;
+  translate: -50% 0;
+  user-select: text;
+}
+
+.meeting-transcript > header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: clamp(2.2rem, 6vh, 4.8rem);
+  padding-bottom: 0.7rem;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-faint);
+  font-size: 0.68em;
+  letter-spacing: 0.14em;
+}
+
+.meeting-transcript > p {
+  max-width: 39rem;
+  margin: 0 0 1.55rem;
+}
+
+.meeting-transcript > p:nth-of-type(1) {
+  margin-bottom: 2.2rem;
+  font-size: 1.08em;
+}
+
+.meeting-transcript mark {
+  padding: 0 0.08em 0.08em;
+  border-bottom: 1px solid color-mix(in srgb, var(--scene-accent) 72%, transparent);
+  color: var(--ink);
+  background: color-mix(in srgb, var(--scene-accent) 9%, transparent);
+  box-decoration-break: clone;
+}
+
+.meeting-actions {
+  display: grid;
+  grid-template-columns: 2rem 1fr auto;
+  align-items: baseline;
+  gap: 1rem;
+  margin-top: 0.2rem;
+  padding: 0.82rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.meeting-actions span,
+.meeting-actions em {
+  color: var(--ink-faint);
+  font-size: 0.68em;
+  font-style: normal;
+  letter-spacing: 0.08em;
+}
+
+.meeting-actions p {
+  margin: 0;
+}
+
+.meeting-transcript > footer {
+  margin-top: clamp(1.8rem, 5vh, 3.6rem);
+  color: var(--ink-soft);
+  font-size: 0.82em;
+}
+
 .orb-stage[data-voice-state='listening'] .particle-orb-shell {
   opacity: var(--mic-opacity, 0.64);
   filter: brightness(var(--mic-brightness, 0.72)) saturate(0.9);
   transform: scale(var(--mic-scale, 0.96));
   animation: recording-inhale 760ms var(--ease-expo);
-}
-
-.orb-stage[data-voice-state='speaking'] .particle-orb-shell {
-  opacity: 0.94;
-  filter: brightness(1.08) saturate(1.08);
-  transform: scale(1.015);
 }
 
 .orb-canvas {
@@ -652,14 +723,9 @@ a:focus-visible {
   height: 100%;
 }
 
-.voice-trigger[data-state='listening'] .voice-bars i,
-.voice-trigger[data-state='speaking'] .voice-bars i {
+.voice-trigger[data-state='listening'] .voice-bars i {
   color: var(--scene-accent);
   animation: voice-meter 0.72s ease-in-out infinite alternate;
-}
-
-.voice-trigger[data-state='speaking'] .voice-bars i {
-  animation-duration: 0.34s;
 }
 
 .voice-time {
@@ -1113,6 +1179,12 @@ body:has(.interactive-target:hover) .field-cursor {
     background-size: 30px 30px, auto, auto;
   }
 
+  .meeting-transcript {
+    top: 15%;
+    width: min(38rem, calc(100vw - 4rem));
+    font-size: clamp(0.76rem, 2.2vw, 0.94rem);
+  }
+
   .scene-meta {
     display: none;
   }
@@ -1223,6 +1295,32 @@ body:has(.interactive-target:hover) .field-cursor {
 
   .orb-stage {
     top: 52%;
+  }
+
+  .meeting-transcript {
+    top: 17%;
+    width: calc(100vw - 2.5rem);
+    max-height: calc(100dvh - 8.5rem);
+    overflow: auto;
+    font-size: 0.74rem;
+    line-height: 1.5;
+  }
+
+  .meeting-transcript > header {
+    margin-bottom: 2rem;
+  }
+
+  .meeting-transcript > p {
+    margin-bottom: 1.15rem;
+  }
+
+  .meeting-actions {
+    grid-template-columns: 1.6rem 1fr;
+    gap: 0.7rem;
+  }
+
+  .meeting-actions em {
+    display: none;
   }
 
   .voice-trigger {
