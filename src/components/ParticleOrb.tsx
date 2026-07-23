@@ -9,6 +9,7 @@ export type OrbMode = 'idle' | 'dialogue' | 'recording' | 'meeting' | 'translate
 
 const DESKTOP_PARTICLE_COUNT = 16000
 const MAX_MARKERS = 8
+const LOUD_LEVEL_GAMMA = 0.74
 
 type DeviceProfile = {
   label: string
@@ -71,13 +72,13 @@ const DEFAULT_CONTROLS: SimulationControls = {
   lifeSpeed: 0.003,
   motionSpeed: 0.38,
   attraction: 0.01,
-  lifeColor: 0.78,
-  levelGain: 1.0,
-  levelGamma: 1.0,
-  bloomStrength: 0.34,
-  bloomRadius: 0.24,
-  bloomThreshold: 0.72,
-  particleOpacity: 0.82,
+  lifeColor: 1,
+  levelGain: 3,
+  levelGamma: 1.96,
+  bloomStrength: 2.5,
+  bloomRadius: 1,
+  bloomThreshold: 1.1,
+  particleOpacity: 0.17,
 }
 
 const CONTROL_LIMITS: Record<keyof SimulationControls, readonly [number, number]> = {
@@ -107,7 +108,6 @@ const BUILT_IN_PRESETS: Record<string, Partial<SimulationControls>> = {
     noiseForce: 0.09,
     noiseSpeed: 0.38,
     motionSpeed: 0.34,
-    bloomStrength: 0.42,
   },
   speaking: {
     noiseType: 1,
@@ -115,8 +115,6 @@ const BUILT_IN_PRESETS: Record<string, Partial<SimulationControls>> = {
     noiseForce: 0.16,
     noiseSpeed: 0.72,
     motionSpeed: 0.62,
-    bloomStrength: 0.72,
-    particleOpacity: 0.94,
   },
   thinking: {
     noiseType: 3,
@@ -265,8 +263,8 @@ const simulationCommon = /* glsl */ `
   uniform float uParticleCount;
   uniform float uAttraction;
   uniform float uDamping;
-  uniform float uRepelRadius;
-  uniform float uRepelStrength;
+  uniform float uPointerRadius;
+  uniform float uPointerStrength;
   uniform float uNoiseScale;
   uniform float uNoiseType;
   uniform float uNoiseStrength;
@@ -393,16 +391,20 @@ const simulationCommon = /* glsl */ `
     vec3 diffusionNoise = rawDiffusion - normal * dot(rawDiffusion, normal);
     acceleration += diffusionNoise * uDiffusion * (0.4 + life * 0.6);
 
-    vec2 fromPointer = position.xy - uPointer;
-    float distanceToPointer = length(fromPointer);
+    vec2 toPointer = uPointer - position.xy;
+    float distanceToPointer = length(toPointer);
 
     if (
       uPointerActive > 0.5 &&
       distanceToPointer > 0.1 &&
-      distanceToPointer < uRepelRadius
+      distanceToPointer < uPointerRadius
     ) {
-      float falloff = 1.0 - distanceToPointer / uRepelRadius;
-      acceleration += vec3(fromPointer / distanceToPointer, 0.0) * uRepelStrength * falloff;
+      // A soft gravitational well follows the cursor. Squared falloff keeps
+      // the edge calm while particles close to the pointer visibly converge.
+      float falloff = 1.0 - distanceToPointer / uPointerRadius;
+      float attractionFalloff = falloff * falloff;
+      acceleration += vec3(toPointer / distanceToPointer, 0.0)
+        * uPointerStrength * attractionFalloff;
     }
 
     // Project every accumulated force and the feedback velocity back onto the
@@ -473,13 +475,21 @@ const particleVertexShader = /* glsl */ `
   attribute float aIndex;
   varying float vLife;
   varying float vVisible;
+  varying float vKeyLight;
+  varying float vRimLight;
+  varying float vDepthLight;
 
   void main() {
     vec4 state = texture2D(uPosition, aReference);
+    vec3 surfaceNormal = normalize(state.xyz + vec3(0.00001));
+    vec3 keyDirection = normalize(vec3(-0.48, 0.64, 0.60));
+    vKeyLight = max(dot(surfaceNormal, keyDirection), 0.0);
+    vRimLight = pow(1.0 - abs(surfaceNormal.z), 2.15);
+    vDepthLight = clamp(surfaceNormal.z * 0.5 + 0.5, 0.0, 1.0);
     gl_Position = projectionMatrix * modelViewMatrix * vec4(state.xyz, 1.0);
     vLife = state.w;
     vVisible = 1.0 - step(uParticleCount, aIndex);
-    gl_PointSize = 2.0 * uPixelRatio;
+    gl_PointSize = (1.65 + vDepthLight * 0.62 + vRimLight * 0.24) * uPixelRatio;
   }
 `
 
@@ -492,13 +502,18 @@ const particleFragmentShader = /* glsl */ `
   uniform vec3 uPersonaColor;
   varying float vLife;
   varying float vVisible;
+  varying float vKeyLight;
+  varying float vRimLight;
+  varying float vDepthLight;
 
   void main() {
     if (vVisible < 0.5) discard;
     vec2 point = gl_PointCoord - 0.5;
     float lifeAlpha = smoothstep(0.0, 0.055, vLife)
       * (1.0 - smoothstep(0.84, 1.0, vLife));
-    float alpha = (1.0 - smoothstep(0.34, 0.5, length(point))) * lifeAlpha * uParticleOpacity;
+    float depthOpacity = mix(0.58, 1.0, vDepthLight);
+    float alpha = (1.0 - smoothstep(0.34, 0.5, length(point)))
+      * lifeAlpha * uParticleOpacity * depthOpacity;
     if (alpha <= 0.0) discard;
 
     // Select the Life channel as the instance color reference: young points
@@ -510,7 +525,12 @@ const particleFragmentShader = /* glsl */ `
     vec3 secondHalf = mix(matureColor, oldColor, smoothstep(0.48, 1.0, vLife));
     vec3 lifeGradient = mix(firstHalf, secondHalf, step(0.48, vLife));
 
-    vec3 color = mix(vec3(1.0), lifeGradient, uLifeColor) * uPersonaColor;
+    vec3 baseColor = mix(vec3(1.0), lifeGradient, uLifeColor) * uPersonaColor;
+    float shapedKeyLight = smoothstep(0.0, 0.88, vKeyLight);
+    float surfaceLight = (0.38 + shapedKeyLight * 0.68) * mix(0.62, 1.0, vDepthLight);
+    vec3 rimColor = mix(baseColor, vec3(1.0), 0.52);
+    vec3 color = baseColor * surfaceLight
+      + rimColor * vRimLight * (0.12 + vDepthLight * 0.24);
     color = pow(max(color * uLevelGain, vec3(0.0)), vec3(1.0 / max(uLevelGamma, 0.001)));
     gl_FragColor = vec4(color, alpha);
   }
@@ -605,8 +625,8 @@ function addSimulationUniforms(
   material.uniforms.uParticleCount = { value: particleCount }
   material.uniforms.uAttraction = { value: controls.attraction }
   material.uniforms.uDamping = { value: 0.9 }
-  material.uniforms.uRepelRadius = { value: radius === 160 ? 60 : 90 }
-  material.uniforms.uRepelStrength = { value: 28 }
+  material.uniforms.uPointerRadius = { value: radius * 0.58 }
+  material.uniforms.uPointerStrength = { value: radius === 160 ? 3.2 : 4.2 }
   material.uniforms.uNoiseType = { value: controls.noiseType }
   material.uniforms.uNoiseScale = { value: controls.noiseScale }
   material.uniforms.uNoiseStrength = { value: controls.noiseAmplitude }
@@ -619,7 +639,13 @@ function addSimulationUniforms(
   material.uniforms.uPointerActive = { value: 0 }
 }
 
-export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
+export function ParticleOrb({
+  mode,
+  showControls = true,
+}: {
+  mode: OrbMode
+  showControls?: boolean
+}) {
   const containerRef = useRef<HTMLDivElement>(null)
   const controlsRef = useRef<SimulationControls>({ ...DEFAULT_CONTROLS })
   const renderedControlsRef = useRef<SimulationControls>({ ...DEFAULT_CONTROLS })
@@ -688,21 +714,29 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
     setDeviceSummary(`${profile.label} · ${profile.particleCount.toLocaleString()} 粒子 · ${profile.targetFps} FPS`)
     const isMobile = profile.label === '手机'
     const radius = isMobile ? 160 : 250
+    const projectionHalfExtent = radius * 1.32
     const pixelRatio = Math.min(window.devicePixelRatio, profile.maxDpr)
     const scene = new THREE.Scene()
-    const camera = new THREE.OrthographicCamera(-450, 450, 350, -350, 0.1, 2000)
+    const camera = new THREE.OrthographicCamera(
+      -projectionHalfExtent,
+      projectionHalfExtent,
+      projectionHalfExtent,
+      -projectionHalfExtent,
+      0.1,
+      2000,
+    )
     camera.position.z = 800
 
     let renderer: THREE.WebGLRenderer
     try {
-      renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false, powerPreference: 'high-performance' })
+      renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, powerPreference: 'high-performance' })
     } catch {
       container.dataset.error = 'true'
       return
     }
 
     renderer.setPixelRatio(pixelRatio)
-    renderer.setClearColor(0x000000, 1)
+    renderer.setClearColor(0x000000, 0)
     renderer.outputColorSpace = THREE.SRGBColorSpace
     container.appendChild(renderer.domElement)
 
@@ -1029,9 +1063,11 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
 
     const movePointer = (event: PointerEvent) => {
       const bounds = container.getBoundingClientRect()
+      const normalizedX = ((event.clientX - bounds.left) / bounds.width) * 2 - 1
+      const normalizedY = 1 - ((event.clientY - bounds.top) / bounds.height) * 2
       pointer.set(
-        event.clientX - bounds.left - bounds.width / 2,
-        bounds.height / 2 - (event.clientY - bounds.top),
+        normalizedX * (camera.right - camera.left) * 0.5,
+        normalizedY * (camera.top - camera.bottom) * 0.5,
       )
       pointerActive = true
       syncPointerUniforms()
@@ -1050,10 +1086,11 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
       if (!width || !height) return
       renderer.setSize(width, height, false)
       composer.setSize(width, height)
-      camera.left = -width / 2
-      camera.right = width / 2
-      camera.top = height / 2
-      camera.bottom = -height / 2
+      const aspect = width / height
+      camera.left = -projectionHalfExtent * aspect
+      camera.right = projectionHalfExtent * aspect
+      camera.top = projectionHalfExtent
+      camera.bottom = -projectionHalfExtent
       camera.updateProjectionMatrix()
     }
     const observer = new ResizeObserver(resize)
@@ -1084,6 +1121,11 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
       horizontalCurrentRef.current +=
         (horizontalTargetRef.current - horizontalCurrentRef.current) * horizontalSmoothing
       const audioLevel = audioCurrentRef.current
+      const effectiveLevelGamma = THREE.MathUtils.lerp(
+        currentControls.levelGamma,
+        LOUD_LEVEL_GAMMA,
+        audioLevel,
+      )
       const burstEnergy = burstRef.current.energy
       burstRef.current.energy = Math.max(0, burstEnergy - burstRef.current.decayPerSecond * delta)
 
@@ -1123,8 +1165,8 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
       }
 
       material.uniforms.uLifeColor.value = currentControls.lifeColor
-      material.uniforms.uLevelGain.value = currentControls.levelGain + burstEnergy * 0.22
-      material.uniforms.uLevelGamma.value = currentControls.levelGamma
+      material.uniforms.uLevelGain.value = Math.min(3, currentControls.levelGain + burstEnergy * 0.22)
+      material.uniforms.uLevelGamma.value = effectiveLevelGamma
       material.uniforms.uParticleOpacity.value = currentControls.particleOpacity
       material.uniforms.uPersonaColor.value = persona.current
 
@@ -1149,7 +1191,8 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
       markerGeometry.getAttribute('aColor').needsUpdate = true
 
       bloomPass.strength =
-        (currentControls.bloomStrength + audioLevel * 0.12 + burstEnergy * 1.1) * profile.bloomScale
+        Math.min(2.5, currentControls.bloomStrength + audioLevel * 0.12 + burstEnergy * 1.1)
+        * profile.bloomScale
       bloomPass.radius = currentControls.bloomRadius
       bloomPass.threshold = currentControls.bloomThreshold
       composer.render()
@@ -1180,6 +1223,24 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
       renderer.domElement.remove()
     }
   }, [])
+
+  useEffect(() => {
+    const presetByMode: Record<OrbMode, string> = {
+      idle: 'idle',
+      dialogue: 'listening',
+      recording: 'speaking',
+      meeting: 'thinking',
+      translate: 'listening',
+    }
+    const applyMode = () => {
+      const api = window.particleOrb
+      if (!api) return
+      api.setPreset(presetByMode[mode])
+    }
+    applyMode()
+    window.addEventListener('particle-orb:ready', applyMode)
+    return () => window.removeEventListener('particle-orb:ready', applyMode)
+  }, [mode])
 
   const simulationRows: Array<{
     key: keyof SimulationControls
@@ -1264,7 +1325,7 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
       <div ref={containerRef} className="orb-canvas" role="img" aria-label="可交互的旋转白色粒子球">
         <div className="webgl-fallback">此设备暂不支持浮点纹理粒子模拟</div>
       </div>
-      <details className="noise-panel">
+      {showControls && <details className="noise-panel">
         <summary>噪声参数</summary>
         <div className="noise-panel__controls">
           <label className="noise-control noise-control--select">
@@ -1288,8 +1349,8 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
             重置参数
           </button>
         </div>
-      </details>
-      <details className="noise-panel render-panel">
+      </details>}
+      {showControls && <details className="noise-panel render-panel">
         <summary>渲染参数</summary>
         <div className="noise-panel__controls">
           <p className="device-profile">{deviceSummary}</p>
@@ -1304,8 +1365,8 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
           </label>
           {renderControlRows(renderRows)}
         </div>
-      </details>
-      <details className="noise-panel marker-panel" open>
+      </details>}
+      {showControls && <details className="noise-panel marker-panel" open>
         <summary>任务光点测试 · {markerStates.length}/{MAX_MARKERS}</summary>
         <div className="noise-panel__controls marker-panel__controls">
           <div className="marker-panel__actions">
@@ -1342,7 +1403,7 @@ export function ParticleOrb({ mode: _mode }: { mode: OrbMode }) {
           ))}
           {!markerStates.length && <p className="marker-panel__empty">点击“生成 3 个任务”观察外圈环绕与单点闪烁。</p>}
         </div>
-      </details>
+      </details>}
     </div>
   )
 }

@@ -1,15 +1,13 @@
-# GPU Particle Orb
+# Agent1 · BicaMind Presence Interface
 
-将原 p5.js / Processing 粒子弹簧动画改写为 Three.js GLSL shader 的实时交互版本。
-
-在线预览：[https://lumina-voice-orb.vercel.app](https://lumina-voice-orb.vercel.app)
+以 BicaMind 多场景交互逻辑为基础的实时语音智能界面，包含翻译、主场、会议与人格市场。核心视觉为 Three.js GLSL 驱动的 GPU 粒子球。
 
 ## 技术栈
 
 - Vite + React + TypeScript
 - Three.js `Points` + 自定义 GLSL Shader
 - `GPUComputationRenderer` 双浮点纹理保存位置与速度
-- GPU 弹簧回归、阻尼、旋转目标与指针斥力
+- GPU 弹簧回归、阻尼、旋转目标与指针吸引
 - CSS 响应式布局与 `prefers-reduced-motion` 降级
 
 ## 实现路径
