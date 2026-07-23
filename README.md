@@ -29,6 +29,10 @@
 
 ## 程序化接口
 
+前后端实时事件、翻译流、任务与会议能力的接口边界见
+[`docs/AGENT1_INTERFACE_CONTRACT.md`](docs/AGENT1_INTERFACE_CONTRACT.md)；可编译事件类型见
+[`src/protocol/agent1.ts`](src/protocol/agent1.ts)。
+
 ### JS API
 
 ```js

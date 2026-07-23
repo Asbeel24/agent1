@@ -1,84 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { gsap } from 'gsap'
-import { ParticleOrb, type OrbMode } from './components/ParticleOrb'
+import { ParticleOrb } from './components/ParticleOrb'
+import { languages, personas, scenes, tasks, type SceneId } from './data/experience'
+import { useMeetingTransition } from './hooks/useMeetingTransition'
+import { useMicrophoneInput } from './hooks/useMicrophoneInput'
+import { useRecordingSoundEffects } from './hooks/useRecordingSoundEffects'
 
-type SceneId = 'translate' | 'home' | 'meeting' | 'personas'
-type VoiceState = 'idle' | 'listening' | 'speaking'
-type MicrophoneState = 'idle' | 'requesting' | 'active' | 'denied'
-
-type Scene = {
-  id: SceneId
-  order: string
-  label: string
-  description: string
-  signal: string
-  color: string
-  orbMode: OrbMode
-  preset: 'idle' | 'listening' | 'thinking'
-}
-
-const scenes: Scene[] = [
-  {
-    id: 'translate',
-    order: '01',
-    label: '翻译',
-    description: '双向聆听 · 实时转述',
-    signal: 'BILINGUAL FIELD',
-    color: '#74c9e8',
-    orbMode: 'translate',
-    preset: 'listening',
-  },
-  {
-    id: 'home',
-    order: '02',
-    label: '主场',
-    description: '自然对话 · 长期记忆',
-    signal: 'PRIMARY PRESENCE',
-    color: '#c6c8d9',
-    orbMode: 'dialogue',
-    preset: 'idle',
-  },
-  {
-    id: 'meeting',
-    order: '03',
-    label: '会议',
-    description: '实时记录 · 任务提取',
-    signal: 'COLLECTIVE MEMORY',
-    color: '#d9a17d',
-    orbMode: 'meeting',
-    preset: 'thinking',
-  },
-  {
-    id: 'personas',
-    order: '04',
-    label: '人格市场',
-    description: '人格切换 · 关系延续',
-    signal: 'PERSONA EXCHANGE',
-    color: '#c2afd2',
-    orbMode: 'idle',
-    preset: 'idle',
-  },
-]
-
-const personas = [
-  { id: 'joi', name: 'Joi', role: '温和的长期陪伴者', color: '#c6c8d9' },
-  { id: 'moss', name: 'Moss', role: '冷静的研究搭档', color: '#79bfd2' },
-  { id: 'ember', name: 'Ember', role: '直接的行动顾问', color: '#d49b79' },
-  { id: 'violet', name: 'Violet', role: '敏锐的创意伙伴', color: '#b6a1c8' },
-]
-
-const tasks = [
-  { id: 'market-notes', time: '09:40', title: '整理市场访谈', progress: '06 / 08' },
-  { id: 'meeting-brief', time: '14:10', title: '生成周会简报', progress: '进行中' },
-  { id: 'memory-review', time: '18:30', title: '回顾今日记忆', progress: '待确认' },
-]
-
-const languages = [
-  { code: 'ZH', label: '中文' },
-  { code: 'EN', label: 'English' },
-  { code: 'JA', label: '日本語' },
-  { code: 'KO', label: '한국어' },
-]
+type VoiceState = 'idle' | 'listening'
 
 export default function App() {
   const rootRef = useRef<HTMLDivElement>(null)
@@ -87,22 +15,29 @@ export default function App() {
   const suppressOrbClickRef = useRef(false)
   const [sceneId, setSceneId] = useState<SceneId>('home')
   const [voiceState, setVoiceState] = useState<VoiceState>('idle')
-  const [microphoneState, setMicrophoneState] = useState<MicrophoneState>('idle')
-  const [recordingSeconds, setRecordingSeconds] = useState(0)
   const [personaId, setPersonaId] = useState('joi')
   const [taskOpen, setTaskOpen] = useState(false)
   const [personaOpen, setPersonaOpen] = useState(false)
+  const [meetingTextOpen, setMeetingTextOpen] = useState(false)
   const [sourceLanguage, setSourceLanguage] = useState(0)
   const [targetLanguage, setTargetLanguage] = useState(1)
 
   const activeScene = scenes.find((scene) => scene.id === sceneId) ?? scenes[1]
   const activePersona = personas.find((persona) => persona.id === personaId) ?? personas[0]
   const activeColor = sceneId === 'personas' ? activePersona.color : activeScene.color
+  const { playRecordingStart, playRecordingStop } = useRecordingSoundEffects()
+  const { microphoneState, recordingSeconds } = useMicrophoneInput({
+    active: voiceState === 'listening',
+    rootRef,
+    onDenied: () => setVoiceState('idle'),
+  })
+  useMeetingTransition({ rootRef, sceneId, textOpen: meetingTextOpen })
 
   useLayoutEffect(() => {
     const root = rootRef.current
     if (!root) return
 
+    let removeCursorListener = () => {}
     const context = gsap.context(() => {
       const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
       if (reduceMotion) return
@@ -133,10 +68,23 @@ export default function App() {
         moveGridY?.((event.clientY / window.innerHeight - 0.5) * 8)
       }
       window.addEventListener('pointermove', moveCursor)
-      return () => window.removeEventListener('pointermove', moveCursor)
+      removeCursorListener = () => window.removeEventListener('pointermove', moveCursor)
     }, root)
 
-    return () => context.revert()
+    const compactLayout = window.matchMedia('(max-width: 900px)')
+    const resetResponsiveOrbPosition = () => {
+      const orb = root.querySelector<HTMLElement>('.orb-stage')
+      if (!orb) return
+      gsap.killTweensOf(orb)
+      gsap.set(orb, { clearProps: 'transform,translate' })
+    }
+    compactLayout.addEventListener('change', resetResponsiveOrbPosition)
+
+    return () => {
+      compactLayout.removeEventListener('change', resetResponsiveOrbPosition)
+      removeCursorListener()
+      context.revert()
+    }
   }, [])
 
   useLayoutEffect(() => {
@@ -158,160 +106,19 @@ export default function App() {
   }, [sceneId])
 
   useEffect(() => {
-    const applyScene = () => {
+    const syncOrbState = () => {
       const api = window.particleOrb
       if (!api) return
+
       api.setPersona({ color: '#ffffff', transition: 1.1 })
-      api.setPreset(activeScene.preset)
-      api.trigger('burst', { intensity: 0.34, duration: 0.9 })
+      api.setAudioLevel(voiceState === 'listening' ? 0.04 : 0)
+      api.setPreset(voiceState === 'listening' ? 'listening' : activeScene.preset)
     }
 
-    applyScene()
-    window.addEventListener('particle-orb:ready', applyScene)
-    return () => window.removeEventListener('particle-orb:ready', applyScene)
-  }, [activeColor, activeScene.preset])
-
-  useEffect(() => {
-    const api = window.particleOrb
-    if (!api) return
-
-    if (voiceState === 'idle') {
-      api.setAudioLevel(0)
-      api.setPreset(activeScene.preset)
-      return
-    }
-
-    if (voiceState === 'listening') {
-      api.setPreset('listening')
-      api.setAudioLevel(0.04)
-      return
-    }
-
-    api.setPreset('speaking')
-    api.trigger('burst', { intensity: 0.6, duration: 0.75 })
-    const interval = window.setInterval(() => {
-      api.setAudioLevel(0.35 + Math.random() * 0.55)
-    }, 130)
-    return () => {
-      window.clearInterval(interval)
-      api.setAudioLevel(0)
-    }
+    syncOrbState()
+    window.addEventListener('particle-orb:ready', syncOrbState)
+    return () => window.removeEventListener('particle-orb:ready', syncOrbState)
   }, [voiceState, activeScene.preset])
-
-  useEffect(() => {
-    if (voiceState !== 'listening' || microphoneState !== 'active') {
-      if (voiceState === 'idle') setRecordingSeconds(0)
-      return
-    }
-
-    setRecordingSeconds(0)
-    const startedAt = Date.now()
-    const interval = window.setInterval(() => {
-      setRecordingSeconds(Math.floor((Date.now() - startedAt) / 1000))
-    }, 250)
-    return () => window.clearInterval(interval)
-  }, [voiceState, microphoneState])
-
-  useEffect(() => {
-    if (voiceState !== 'listening') {
-      setMicrophoneState((current) => (current === 'denied' ? current : 'idle'))
-      return
-    }
-
-    let cancelled = false
-    let animationFrame = 0
-    let stream: MediaStream | null = null
-    let audioContext: AudioContext | null = null
-    let source: MediaStreamAudioSourceNode | null = null
-    let analyser: AnalyserNode | null = null
-
-    const startMicrophone = async () => {
-      if (!navigator.mediaDevices?.getUserMedia) {
-        setMicrophoneState('denied')
-        setVoiceState('idle')
-        return
-      }
-
-      setMicrophoneState('requesting')
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-        })
-
-        if (cancelled) {
-          stream.getTracks().forEach((track) => track.stop())
-          return
-        }
-
-        audioContext = new AudioContext()
-        await audioContext.resume()
-        analyser = audioContext.createAnalyser()
-        analyser.fftSize = 256
-        analyser.smoothingTimeConstant = 0.78
-        source = audioContext.createMediaStreamSource(stream)
-        source.connect(analyser)
-        const waveform = new Uint8Array(analyser.fftSize)
-        setMicrophoneState('active')
-
-        const updateAudioLevel = () => {
-          if (!analyser || cancelled) return
-          analyser.getByteTimeDomainData(waveform)
-          let energy = 0
-          for (const sample of waveform) {
-            const normalized = (sample - 128) / 128
-            energy += normalized * normalized
-          }
-          const rms = Math.sqrt(energy / waveform.length)
-          const level = Math.min(1, Math.max(0, (rms - 0.008) * 9.5))
-          window.particleOrb?.setAudioLevel(level)
-          const orbStage = rootRef.current?.querySelector<HTMLElement>('.orb-stage')
-          if (orbStage) {
-            orbStage.style.setProperty('--mic-scale', String(0.95 + level * 0.075))
-            orbStage.style.setProperty('--mic-brightness', String(0.7 + level * 0.72))
-            orbStage.style.setProperty('--mic-opacity', String(0.62 + level * 0.34))
-            orbStage.style.setProperty('--mic-ring-scale', String(0.92 + level * 0.15))
-            orbStage.style.setProperty('--mic-glow', String(0.18 + level * 0.72))
-          }
-          animationFrame = window.requestAnimationFrame(updateAudioLevel)
-        }
-        updateAudioLevel()
-      } catch {
-        if (!cancelled) {
-          setMicrophoneState('denied')
-          setVoiceState('idle')
-        }
-      }
-    }
-
-    void startMicrophone()
-    return () => {
-      cancelled = true
-      window.cancelAnimationFrame(animationFrame)
-      source?.disconnect()
-      analyser?.disconnect()
-      stream?.getTracks().forEach((track) => track.stop())
-      if (audioContext && audioContext.state !== 'closed') {
-        void audioContext.close()
-      }
-      const orbStage = rootRef.current?.querySelector<HTMLElement>('.orb-stage')
-      if (orbStage) {
-        for (const property of [
-          '--mic-scale',
-          '--mic-brightness',
-          '--mic-opacity',
-          '--mic-ring-scale',
-          '--mic-glow',
-        ]) {
-          orbStage.style.removeProperty(property)
-        }
-      }
-      window.particleOrb?.setAudioLevel(0)
-    }
-  }, [voiceState])
 
   useEffect(() => {
     if (!taskOpen) return
@@ -335,8 +142,10 @@ export default function App() {
   }, [taskOpen])
 
   const selectScene = (nextScene: SceneId) => {
+    if (voiceState === 'listening') playRecordingStop()
     setSceneId(nextScene)
     setPersonaOpen(nextScene === 'personas')
+    setMeetingTextOpen(false)
     setVoiceState('idle')
   }
 
@@ -351,6 +160,8 @@ export default function App() {
     let moved = false
     let wheelAccumulator = 0
     let wheelResetTimer = 0
+    let verticalWheelAccumulator = 0
+    let verticalWheelResetTimer = 0
 
     const shouldIgnoreGesture = (target: EventTarget | null) =>
       target instanceof Element &&
@@ -358,8 +169,30 @@ export default function App() {
 
     const getSlidingElements = () =>
       Array.from(
-        root.querySelectorAll<HTMLElement>('.scene-copy, .scene-meta, .language-switcher'),
+        root.querySelectorAll<HTMLElement>(
+          meetingTextOpen
+            ? '.meeting-transcript'
+            : '.scene-copy, .scene-meta, .language-switcher',
+        ),
       )
+
+    const getVerticalElements = () =>
+      Array.from(
+        root.querySelectorAll<HTMLElement>(
+          meetingTextOpen
+            ? '.meeting-transcript'
+            : '.orb-stage, .scene-copy, .scene-meta',
+        ),
+      )
+
+    const switchMeetingView = (open: boolean) => {
+      if (sceneId !== 'meeting' || open === meetingTextOpen || gestureLockRef.current) return
+      gestureLockRef.current = true
+      setMeetingTextOpen(open)
+      window.setTimeout(() => {
+        gestureLockRef.current = false
+      }, 900)
+    }
 
     const onPointerDown = (event: PointerEvent) => {
       if (event.button !== 0 || shouldIgnoreGesture(event.target)) return
@@ -381,13 +214,24 @@ export default function App() {
         suppressOrbClickRef.current = true
       }
       const slidingElements = getSlidingElements()
-      if (slidingElements.length && Math.abs(deltaX) > Math.abs(deltaY)) {
+      const horizontalLocked = sceneId === 'meeting' && meetingTextOpen
+      if (
+        !horizontalLocked &&
+        slidingElements.length &&
+        Math.abs(deltaX) > Math.abs(deltaY)
+      ) {
         gsap.set(slidingElements, {
           x: deltaX * 0.52,
           opacity: 1 - Math.min(Math.abs(deltaX) / 1400, 0.18),
         })
+        window.particleOrb?.setHorizontalInput(Math.max(-1, Math.min(1, deltaX / 180)))
+      } else if (sceneId === 'meeting' && Math.abs(deltaY) > Math.abs(deltaX)) {
+        const verticalElements = getVerticalElements()
+        gsap.set(verticalElements, {
+          y: deltaY * 0.22,
+          opacity: 1 - Math.min(Math.abs(deltaY) / 620, 0.28),
+        })
       }
-      window.particleOrb?.setHorizontalInput(Math.max(-1, Math.min(1, deltaX / 180)))
     }
 
     const switchScene = (direction: 1 | -1) => {
@@ -461,6 +305,41 @@ export default function App() {
         }, 0)
       }
 
+      if (
+        sceneId === 'meeting' &&
+        Math.abs(deltaY) >= 44 &&
+        Math.abs(deltaY) > Math.abs(deltaX) * 1.15
+      ) {
+        const shouldOpen = deltaY < 0
+        if ((shouldOpen && !meetingTextOpen) || (!shouldOpen && meetingTextOpen)) {
+          switchMeetingView(shouldOpen)
+        } else {
+          gsap.to(getVerticalElements(), {
+            y: 0,
+            opacity: 1,
+            duration: 0.36,
+            ease: 'power3.out',
+            overwrite: true,
+          })
+        }
+        return
+      }
+
+      if (
+        sceneId === 'meeting' &&
+        meetingTextOpen &&
+        Math.abs(deltaX) > Math.abs(deltaY)
+      ) {
+        gsap.to(getSlidingElements(), {
+          x: 0,
+          opacity: 1,
+          duration: 0.28,
+          ease: 'power3.out',
+          overwrite: true,
+        })
+        return
+      }
+
       if (Math.abs(deltaX) < 44 || Math.abs(deltaX) <= Math.abs(deltaY) * 1.15) {
         const slidingElements = getSlidingElements()
         if (slidingElements.length) {
@@ -479,6 +358,55 @@ export default function App() {
     }
 
     const onWheel = (event: WheelEvent) => {
+      if (
+        sceneId === 'meeting' &&
+        meetingTextOpen &&
+        Math.abs(event.deltaX) > Math.abs(event.deltaY)
+      ) {
+        event.preventDefault()
+        wheelAccumulator = 0
+        window.particleOrb?.setHorizontalInput(0)
+        return
+      }
+
+      if (
+        sceneId === 'meeting' &&
+        Math.abs(event.deltaY) > Math.abs(event.deltaX) &&
+        Math.abs(event.deltaY) >= 2
+      ) {
+        event.preventDefault()
+        if (shouldIgnoreGesture(event.target) || gestureLockRef.current) return
+
+        window.clearTimeout(verticalWheelResetTimer)
+        verticalWheelAccumulator += event.deltaY
+        gsap.to(getVerticalElements(), {
+          y: -verticalWheelAccumulator * 0.16,
+          opacity: 1 - Math.min(Math.abs(verticalWheelAccumulator) / 540, 0.24),
+          duration: 0.12,
+          ease: 'power2.out',
+          overwrite: true,
+        })
+
+        verticalWheelResetTimer = window.setTimeout(() => {
+          verticalWheelAccumulator = 0
+          gsap.to(getVerticalElements(), {
+            y: 0,
+            opacity: 1,
+            duration: 0.3,
+            ease: 'power3.out',
+            overwrite: true,
+          })
+        }, 180)
+
+        if (Math.abs(verticalWheelAccumulator) < 68) return
+        window.clearTimeout(verticalWheelResetTimer)
+        verticalWheelResetTimer = 0
+        const shouldOpen = verticalWheelAccumulator > 0
+        verticalWheelAccumulator = 0
+        switchMeetingView(shouldOpen)
+        return
+      }
+
       if (
         Math.abs(event.deltaX) <= Math.abs(event.deltaY) ||
         Math.abs(event.deltaX) < 2
@@ -538,6 +466,7 @@ export default function App() {
 
     return () => {
       window.clearTimeout(wheelResetTimer)
+      window.clearTimeout(verticalWheelResetTimer)
       root.removeEventListener('pointerdown', onPointerDown, true)
       window.removeEventListener('pointermove', onPointerMove, true)
       window.removeEventListener('pointerup', finishGesture, true)
@@ -545,7 +474,7 @@ export default function App() {
       window.removeEventListener('wheel', onWheel, true)
       window.particleOrb?.setHorizontalInput(0)
     }
-  }, [sceneId])
+  }, [meetingTextOpen, sceneId])
 
   const cycleLanguage = (side: 'source' | 'target') => {
     if (side === 'source') {
@@ -572,10 +501,14 @@ export default function App() {
 
   const cycleVoiceState = () => {
     if (microphoneState === 'requesting') return
-    setVoiceState((current) => {
-      if (current === 'listening') return 'speaking'
-      return 'listening'
-    })
+    if (voiceState === 'listening') {
+      playRecordingStop()
+      setVoiceState('idle')
+      return
+    }
+
+    playRecordingStart()
+    setVoiceState('listening')
   }
 
   const handleOrbActivation = () => {
@@ -596,6 +529,7 @@ export default function App() {
     <div
       className="experience-shell"
       data-scene={sceneId}
+      data-meeting-view={sceneId === 'meeting' ? (meetingTextOpen ? 'text' : 'orb') : 'inactive'}
       ref={rootRef}
       style={{ '--scene-accent': activeColor } as CSSProperties}
     >
@@ -618,6 +552,7 @@ export default function App() {
               key={scene.id}
               type="button"
               onClick={() => selectScene(scene.id)}
+              aria-label={`${scene.label} ${scene.order}`}
               aria-current={scene.id === sceneId ? 'page' : undefined}
             >
               <span className="scene-nav-signal" aria-hidden="true">
@@ -670,6 +605,38 @@ export default function App() {
           </div>
         )}
 
+        {sceneId === 'meeting' && (
+          <section
+            className="meeting-transcript"
+            aria-hidden={!meetingTextOpen}
+            aria-label="会议文本记录"
+          >
+            <header className="meeting-transcript-line">
+              <span>MEETING NOTE</span>
+              <time dateTime="2026-07-23T14:10">23 JUL · 14:10</time>
+            </header>
+            <p className="meeting-transcript-line">给自己的会议备忘。</p>
+            <p className="meeting-transcript-line">
+              今天的讨论不是继续堆叠功能，而是让声音、信息与决定在同一个界面里自然发生。
+              <mark>先完成体验，再增加能力。</mark>
+            </p>
+            <p className="meeting-transcript-line">
+              当对话结束，系统需要留下三种结果：清晰的上下文、可执行的下一步，以及仍然属于人的判断。
+            </p>
+            <div className="meeting-transcript-line meeting-actions">
+              <span>01</span>
+              <p>整理语音记录，生成一页会议摘要。</p>
+              <em>OWNER · JOI</em>
+            </div>
+            <div className="meeting-transcript-line meeting-actions">
+              <span>02</span>
+              <p>确认本周交互原型，并标记需要继续验证的细节。</p>
+              <em>NEXT · FRI</em>
+            </div>
+            <footer className="meeting-transcript-line">记录不是终点，它应该推动下一次行动。</footer>
+          </section>
+        )}
+
         <section className="scene-copy" aria-live="polite">
           <p className="scene-eyebrow scene-copy-line">{activeScene.signal}</p>
           <div className="scene-identity scene-copy-line">
@@ -683,18 +650,9 @@ export default function App() {
           className="orb-stage interactive-target"
           data-voice-state={voiceState}
           data-microphone-state={microphoneState}
-          role="button"
-          tabIndex={0}
-          aria-label={voiceState === 'idle' ? '点击球体开始录音' : '点击球体切换录音状态'}
           onClick={(event) => {
             if (event.target instanceof Element && event.target.closest('button')) return
             handleOrbActivation()
-          }}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault()
-              handleOrbActivation()
-            }
           }}
         >
           <div className="orb-grid" aria-hidden="true">
@@ -779,7 +737,11 @@ export default function App() {
         </button>
 
         <p className="footer-note">
-          Drag / swipe to change field · Click to speak
+          {sceneId === 'meeting'
+            ? meetingTextOpen
+              ? 'Swipe down · return to particle field'
+              : 'Swipe up · resolve meeting notes'
+            : 'Drag / swipe to change field · Click to speak'}
         </p>
 
         <div className="frame-rate">
