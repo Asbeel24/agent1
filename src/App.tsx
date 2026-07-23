@@ -37,6 +37,7 @@ export default function App() {
     const root = rootRef.current
     if (!root) return
 
+    let removeCursorListener = () => {}
     const context = gsap.context(() => {
       const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
       if (reduceMotion) return
@@ -67,10 +68,23 @@ export default function App() {
         moveGridY?.((event.clientY / window.innerHeight - 0.5) * 8)
       }
       window.addEventListener('pointermove', moveCursor)
-      return () => window.removeEventListener('pointermove', moveCursor)
+      removeCursorListener = () => window.removeEventListener('pointermove', moveCursor)
     }, root)
 
-    return () => context.revert()
+    const compactLayout = window.matchMedia('(max-width: 900px)')
+    const resetResponsiveOrbPosition = () => {
+      const orb = root.querySelector<HTMLElement>('.orb-stage')
+      if (!orb) return
+      gsap.killTweensOf(orb)
+      gsap.set(orb, { clearProps: 'transform,translate' })
+    }
+    compactLayout.addEventListener('change', resetResponsiveOrbPosition)
+
+    return () => {
+      compactLayout.removeEventListener('change', resetResponsiveOrbPosition)
+      removeCursorListener()
+      context.revert()
+    }
   }, [])
 
   useLayoutEffect(() => {
@@ -538,6 +552,7 @@ export default function App() {
               key={scene.id}
               type="button"
               onClick={() => selectScene(scene.id)}
+              aria-label={`${scene.label} ${scene.order}`}
               aria-current={scene.id === sceneId ? 'page' : undefined}
             >
               <span className="scene-nav-signal" aria-hidden="true">
