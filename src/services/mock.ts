@@ -1,19 +1,6 @@
-import type { OrbMode } from '../components/ParticleOrb'
+import type { Language, Persona, Scene, Task } from '../types'
 
-export type SceneId = 'translate' | 'home' | 'meeting' | 'personas'
-
-export type Scene = {
-  id: SceneId
-  order: string
-  label: string
-  description: string
-  signal: string
-  color: string
-  orbMode: OrbMode
-  preset: 'idle' | 'listening' | 'thinking'
-}
-
-export const scenes: Scene[] = [
+export const mockScenes: Scene[] = [
   {
     id: 'translate',
     order: '01',
@@ -56,20 +43,20 @@ export const scenes: Scene[] = [
   },
 ]
 
-export const personas = [
+export const mockPersonas: Persona[] = [
   { id: 'joi', name: 'Joi', role: '温和的长期陪伴者', color: '#c6c8d9' },
   { id: 'moss', name: 'Moss', role: '冷静的研究搭档', color: '#79bfd2' },
   { id: 'ember', name: 'Ember', role: '直接的行动顾问', color: '#d49b79' },
   { id: 'violet', name: 'Violet', role: '敏锐的创意伙伴', color: '#b6a1c8' },
 ]
 
-export const tasks = [
+export const mockTasks: Task[] = [
   { id: 'market-notes', time: '09:40', title: '整理市场访谈', progress: '06 / 08' },
   { id: 'meeting-brief', time: '14:10', title: '生成周会简报', progress: '进行中' },
   { id: 'memory-review', time: '18:30', title: '回顾今日记忆', progress: '待确认' },
 ]
 
-export const languages = [
+export const mockLanguages: Language[] = [
   { code: 'ZH', label: '中文' },
   { code: 'EN', label: 'English' },
   { code: 'JA', label: '日本語' },

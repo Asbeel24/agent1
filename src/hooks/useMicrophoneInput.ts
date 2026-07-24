@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
+import type { MicrophoneState } from '../types'
 
-export type MicrophoneState = 'idle' | 'requesting' | 'active' | 'denied'
+export type { MicrophoneState }
 
 type UseMicrophoneInputOptions = {
   active: boolean
