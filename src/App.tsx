@@ -15,11 +15,13 @@ import { useCustomCursor } from './hooks/useCustomCursor'
 import { useEntranceTimeline } from './hooks/useEntranceTimeline'
 import { useGestureEngine } from './hooks/useGestureEngine'
 import { useMeetingTransition } from './hooks/useMeetingTransition'
+import { useMeetingUpload } from './hooks/useMeetingUpload'
 import { useMicrophoneInput } from './hooks/useMicrophoneInput'
 import { useOrbSync } from './hooks/useOrbSync'
 import { useRecordingSoundEffects } from './hooks/useRecordingSoundEffects'
 import { useSceneReentrance } from './hooks/useSceneReentrance'
 import { useTaskMarkers } from './hooks/useTaskMarkers'
+import { readLocalIdentity } from './auth/localIdentity'
 import { getLanguages, getPersonas, getScenes, getTasks } from './services'
 import { mockLanguages, mockPersonas, mockScenes, mockTasks } from './services/mock'
 import type { Language, Persona, Scene, SceneId, Task, VoiceState } from './types'
@@ -69,11 +71,24 @@ export default function App() {
   })
 
   const { playRecordingStart, playRecordingStop } = useRecordingSoundEffects()
+  const meetingUpload = useMeetingUpload({
+    ownerUserId: readLocalIdentity()?.user_id ?? null,
+  })
+  const handlePcmFrame = useCallback(
+    (pcm: Int16Array) => {
+      if (sceneId === 'meeting') {
+        meetingUpload.appendPcm(pcm)
+      } else {
+        sendAudioFrame(pcm)
+      }
+    },
+    [sceneId, meetingUpload, sendAudioFrame],
+  )
   const { microphoneState, recordingSeconds } = useMicrophoneInput({
     active: voiceState === 'listening',
     rootRef,
     onDenied: () => setVoiceState('idle'),
-    onPcmFrame: sendAudioFrame,
+    onPcmFrame: handlePcmFrame,
   })
   useMeetingTransition({ rootRef, sceneId, textOpen: meetingTextOpen })
 
@@ -87,14 +102,18 @@ export default function App() {
     (nextScene: SceneId) => {
       if (voiceState === 'listening') {
         playRecordingStop()
-        commitAudio()
+        if (sceneId === 'meeting') {
+          void meetingUpload.stop()
+        } else {
+          commitAudio()
+        }
       }
       setSceneId(nextScene)
       setPersonaOpen(nextScene === 'personas')
       setMeetingTextOpen(false)
       setVoiceState('idle')
     },
-    [voiceState, playRecordingStop, commitAudio],
+    [voiceState, sceneId, playRecordingStop, commitAudio, meetingUpload],
   )
 
   const toggleMeetingText = useCallback((open: boolean) => {
@@ -150,13 +169,20 @@ export default function App() {
     if (microphoneState === 'requesting') return
     if (voiceState === 'listening') {
       playRecordingStop()
-      commitAudio()
+      if (sceneId === 'meeting') {
+        void meetingUpload.stop()
+      } else {
+        commitAudio()
+      }
       setVoiceState('idle')
       return
     }
     playRecordingStart()
+    if (sceneId === 'meeting') {
+      void meetingUpload.start()
+    }
     setVoiceState('listening')
-  }, [microphoneState, voiceState, playRecordingStart, playRecordingStop, commitAudio])
+  }, [microphoneState, voiceState, sceneId, playRecordingStart, playRecordingStop, commitAudio, meetingUpload])
 
   const handleOrbActivation = useCallback(() => {
     if (suppressOrbClickRef.current || gestureLockRef.current) return
@@ -222,7 +248,14 @@ export default function App() {
           />
         )}
 
-        {sceneId === 'meeting' && <MeetingTranscript open={meetingTextOpen} />}
+        {sceneId === 'meeting' && (
+          <MeetingTranscript
+            open={meetingTextOpen}
+            meetingId={meetingUpload.meetingId}
+            uploadState={meetingUpload.state}
+            errorMessage={meetingUpload.error}
+          />
+        )}
 
         <SceneCopy scene={activeScene} />
 
