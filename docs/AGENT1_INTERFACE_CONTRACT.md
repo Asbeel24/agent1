@@ -1,127 +1,159 @@
 # Agent1 前后端接口契约
 
-依据《OpenTars 交互界面 · 用户旅程文档》（2026-07-23）整理。本文只把源码旅程能够证明的内容定为契约；无法从文档证明的传输细节列入“待后端确认”，避免前端自行发明协议。
+本契约以《OpenTars HTTP API 与 AppWS 接口文档》（2026-07-24）为唯一协议来源。B Version 不再使用早期用户旅程文档推测传输格式。
 
-对应的可编译类型位于 [`src/protocol/agent1.ts`](../src/protocol/agent1.ts)。
+可编译类型和客户端实现：
 
-## 1. 接口分层
+- [`src/protocol/agent1.ts`](../src/protocol/agent1.ts)：AppWS 信封、事件和运行时判别
+- [`src/api/httpClient.ts`](../src/api/httpClient.ts)：Bearer 鉴权、错误解析和令牌刷新
+- [`src/api/agent1Api.ts`](../src/api/agent1Api.ts)：HTTP 业务接口
+- [`src/api/appWsClient.ts`](../src/api/appWsClient.ts)：AppWS 建连、心跳和重连
 
-| 层 | 用途 | 当前结论 |
-| --- | --- | --- |
-| HTTP | 登录、服务端配置、任务快照、会议上传与归档 | 业务能力已确认；除任务快照外，路径仍需后端确认 |
-| WebSocket | 实时会话、翻译、任务、Onboarding、TTS 事件 | 事件名与业务 payload 已固化为 TypeScript 类型 |
-| Binary audio | 麦克风 PCM/编码音频上行与 TTS 音频下行 | 文档未给出编码、采样率、帧头及背压策略，暂不实现 |
-| Orb JS API | 声强、横滑、preset、人格色、marker、burst | 已由 `window.particleOrb` 实现，不属于后端协议 |
+## 1. 环境
 
-`src/protocol/agent1.ts` 使用 `{ type, data }` 作为前端内部的标准事件形态。它不是对 WebSocket 外层格式的假设；网络适配层必须在后端确认协议后，将真实 wire envelope 转换为该形态。
-
-## 2. WebSocket 事件
-
-### Client → Server
-
-| 事件 | Payload | 触发点 |
-| --- | --- | --- |
-| `client.onboarding.answer` | `{ answer, question_id? }` | 用户完成一题语音回答 |
-| `client.onboarding.skip` | `{}` | 用户跳过首次引导 |
-| `client.translation.start` | `{ source_lang, target_lang }` | 翻译模式开始连续采集 |
-| `client.translation.stop` | `{}` | 翻译模式停止 |
-| `client.task.cancel` | `{ task_id, reason }` | 用户从任务光墨取消任务 |
-| `client.review_candidates.evidence` | `{ candidate_id }` | 用户请求查看记忆候选证据 |
-
-### Server → Client
-
-| 事件组 | 事件 |
+| 类型 | 开发环境 |
 | --- | --- |
-| 连接与错误 | `server.connected`, `server.error` |
-| 输入转写 | `server.input.transcript` |
-| Onboarding | `server.onboarding.started`, `.question`, `.completed` |
-| 翻译 | `server.translation.source`, `.target`, `.state` |
-| 任务 | `server.task.snapshot`, `.draft_created`, `.awaiting_details`, `.ready`, `.started`, `.steps_created`, `.step_started`, `.step_progress`, `.step_completed`, `.progress`, `.result_pending_announcement`, `.completed`, `.failed`, `.cancelled` |
-| TTS | `server.tts.sentence.start`, `.end` |
+| HTTP API | `https://agent1-dev-api.bicamind.xyz` |
+| AppWS | `wss://agent1-dev-api.bicamind.xyz/ws` |
+| Web | `https://agent1-dev.bicamind.xyz` |
 
-翻译片段必须携带 `stream_id + sequence`。前端以 `stream_id` 区分代际，并丢弃同一流内 `sequence` 不递增的旧包。可选时间字段为 `start_time_ms / end_time_ms`。
+浏览器通过环境变量切换：
 
-翻译状态为闭集：
-
-```ts
-type TranslationStreamState =
-  | 'armed'
-  | 'ready'
-  | 'recovering'
-  | 'recovered'
-  | 'unavailable'
-  | 'stopped'
+```env
+VITE_AGENT1_API_MODE=live
+VITE_AGENT1_API_URL=https://agent1-dev-api.bicamind.xyz
+VITE_AGENT1_WS_URL=wss://agent1-dev-api.bicamind.xyz/ws
 ```
 
-## 3. HTTP 能力
+默认仍为 `mock`，确保视觉稿在没有账号和后端依赖时可运行。
 
-文档明确给出的任务补拉接口：
+## 2. HTTP
+
+除公开接口外均使用：
 
 ```http
-GET /v1/tasks?scope=open&limit=20
-GET /v1/tasks?scope=recent&limit=20
+Authorization: Bearer <access_token>
 ```
 
-前端合并并按 `task.id` 去重，再按需拉取详情。详情应包含 `steps / evidence / artifacts`。
+收到 `401` 时，客户端以 `refresh_token` 调用 `POST /v1/auth/refresh`。刷新成功必须同时替换两种令牌；刷新失败清空会话。
 
-会议链路需要以下能力，但文档没有给出 URL，因此这里只冻结语义，不冻结路径：
+当前 B Version 已建模并封装：
 
-1. 创建分片上传会话，返回 `meeting_id / part_size / total_bytes / 已确认分片`。
-2. 上传缺失分片、暂停、继续、终止上传。
-3. 查询校验/登记状态。
-4. 列出会议、读取带鉴权音频、删除会议。
-5. 发起转写、读取转写。
-6. 发起总结、读取总结。
+- `/v1/config`
+- `/v1/auth/register|login|refresh|logout`
+- `/v1/tasks` 日列表与日历列表
+- `/v1/tasks/{id}/status|cancel|suggestion-decision`
+- `/v1/persona-twin...` 与 `/v1/persona-twins/market`
+- `/v1/meeting-settings`
+- `/v1/meetings`、详情、转写与总结
 
-## 4. 任务数据最小字段
+错误解析同时兼容：
 
-```ts
-type TaskSnapshot = {
-  id: string
-  status:
-    | 'draft'
-    | 'awaiting_details'
-    | 'ready'
-    | 'queued'
-    | 'planning'
-    | 'pending'
-    | 'running'
-    | 'retrying'
-    | 'awaiting_confirmation'
-    | 'succeeded'
-    | 'failed'
-    | 'cancelled'
-  context?: string
-  clarification_question?: string
-  missing_fields?: string[]
-  progress?: number
-  result?: string
-  error?: string
-  steps?: TaskStep[]
-  evidence?: TaskEvidence[]
-  artifacts?: TaskArtifact[]
-  updated_at?: string
+```json
+{"error":{"code":"validation_error","message":"request validation failed"}}
+```
+
+和会议设置旧结构：
+
+```json
+{"error":"invalid meeting settings request"}
+```
+
+## 3. AppWS
+
+### 3.1 浏览器鉴权
+
+浏览器原生 `WebSocket` 不能添加 Authorization Header，因此使用 URL 编码后的查询参数：
+
+```text
+wss://agent1-dev-api.bicamind.xyz/ws?access_token=<encoded-token>
+```
+
+不得记录或上报包含令牌的完整 URL。
+
+### 3.2 消息信封
+
+客户端与服务端统一使用：
+
+```json
+{
+  "id": "optional-message-id",
+  "event": "server.connected",
+  "data": {
+    "session_id": "session-id"
+  }
 }
 ```
 
-步骤事件必须携带 `task_id` 与稳定的 `step.id`。球体 marker 只能按任务寻址，不能用步骤索引冒充任务索引。
+- `event` 必填。
+- `id` 可选；不能当作通用请求响应关联键。
+- `data` 可以是对象、`null` 或省略。
+- 已知事件走字段级校验；未知事件保留信封并安全忽略。
 
-## 5. 待后端确认的阻塞项
+### 3.3 心跳与重连
 
-以下内容在确认前不接真实网络：
+- 建连后每 30 秒发送 `client.ping`。
+- 没有对应 JSON `server.pong`。
+- 断线采用 1、2、4、8 秒上限的抖动退避。
+- `auth_session_revoked` 会停止重连、清空认证并关闭连接。
 
-1. WebSocket 消息外层究竟是 `{ type, data }`、`{ event, payload }`，还是其他格式。
-2. WebSocket 鉴权方式：query token、首包鉴权或 Cookie。
-3. 主场录音的开始/停止事件、音频编码、采样率、分片大小和 commit 语义。
-4. TTS 音频的下行格式及文本事件与音频帧的关联键。
-5. 会议 HTTP 的实际路径、方法、错误结构与分片幂等键。
-6. `server.task.snapshot` 是 WS 推送还是 HTTP 响应镜像。
-7. 所有事件是否统一携带 `request_id / session_id / timestamp / schema_version`。
+## 4. 实时音频
 
-## 6. 接入准则
+实时对话使用 PCM16 单声道 16000Hz、标准 Base64：
 
-- 只有 `setAudioLevel` 与 `setHorizontalInput` 允许逐帧更新；业务事件不能直接驱动 Shader uniform。
-- 球体颜色只表达人格。翻译/会议场景色由 DOM 承担。
-- 任务 marker 最多 6 个，另预留 1 个记忆 marker 和 1 个采集 marker。
-- 录音停止后必须关闭 MediaStream、AudioContext、rAF，并立刻写入 `setAudioLevel(0)`。
-- WebSocket 事件进入 UI 前必须先过事件名与 payload 字段级运行时判别；未知或畸形事件记录但不得让页面崩溃。
+```json
+{
+  "event": "client.input.audio.append",
+  "data": {
+    "format": "pcm",
+    "sample_rate": 16000,
+    "data": "<base64-pcm-bytes>"
+  }
+}
+```
+
+B Version 将浏览器麦克风采样降采样为 16kHz PCM16，并按约 170ms 一帧发送。录音结束发送 `client.input.audio.commit`。
+
+会议录音不是 AppWS 音频：会议使用 WAV / PCM16 / 16kHz / 单声道，经 TOS SDK 直传，最大 512MiB、4 小时。
+
+## 5. 翻译与人格
+
+- 语言列表和合法语言对来自 `GET /v1/config`，不能写死。
+- 进入翻译场景发送 `client.translation.start`。
+- 离开翻译场景发送 `client.translation.stop`。
+- 人格选项来自 `config.profile.options`。
+- 选择人格发送 `client.profile.select`。
+
+## 6. 任务
+
+HTTP 是断线恢复与最终状态的权威来源；AppWS 只提供实时增量。
+
+日历任务状态包括：
+
+`suggested`、`draft`、`awaiting_details`、`ready`、`scheduled`、`pending_dispatch`、`pending`、`running`、`succeeded`、`failed`、`cancelled`。
+
+必须注意不同接口的时间格式：
+
+- 任务列表：Unix 秒
+- AppWS 任务事件：Unix 毫秒
+- 任务详情：RFC3339
+
+## 7. 会议
+
+会议 HTTP 类型已经建模，B Version 当前可读取：
+
+- 会议列表和详情
+- 结构化转写
+- schema v2 总结
+- 说话人别名相关数据
+- 转写与总结触发状态
+
+TOS SDK 直传、checkpoint 与短期凭证续期尚未接入浏览器 UI，不应以普通 `fetch` 上传会议 WAV。
+
+## 8. 安全准则
+
+- TOS 临时密钥只放内存，不能进入日志、数据库或诊断文件。
+- 会议能力 URL 是短期不透明字符串，过期后重新获取详情。
+- 令牌不进入埋点、错误上报或 WebSocket URL 日志。
+- 所有列表兼容空数组。
+- 未知枚举值降级展示，不让 UI 崩溃。

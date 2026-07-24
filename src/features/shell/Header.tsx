@@ -1,13 +1,22 @@
 import type { Scene, SceneId } from '../../types'
+import type { AppWsStatus } from '../../api'
 import { SceneRail } from './SceneRail'
 
 type HeaderProps = {
   scenes: readonly Scene[]
   activeSceneId: SceneId
   onSelectScene: (nextScene: SceneId) => void
+  realtimeStatus?: AppWsStatus
 }
 
-export function Header({ scenes, activeSceneId, onSelectScene }: HeaderProps) {
+export function Header({
+  scenes,
+  activeSceneId,
+  onSelectScene,
+  realtimeStatus = 'idle',
+}: HeaderProps) {
+  const live = realtimeStatus === 'open'
+
   return (
     <header className="experience-header">
       <a className="brand-mark interactive-target" href="/" aria-label="BicaMind 首页">
@@ -23,8 +32,8 @@ export function Header({ scenes, activeSceneId, onSelectScene }: HeaderProps) {
 
       <div className="system-status">
         <span className="status-dot" />
-        <span>System online</span>
-        <small>CN / 16:42</small>
+        <span>{live ? 'AppWS live' : 'System online'}</span>
+        <small>{live ? 'B / ONLINE' : 'CN / 16:42'}</small>
       </div>
     </header>
   )

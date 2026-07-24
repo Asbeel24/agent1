@@ -3,4 +3,6 @@ export type Persona = {
   name: string
   role: string
   color: string
+  source: 'profile' | 'market'
+  selectable: boolean
 }

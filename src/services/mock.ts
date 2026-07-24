@@ -44,10 +44,10 @@ export const mockScenes: Scene[] = [
 ]
 
 export const mockPersonas: Persona[] = [
-  { id: 'joi', name: 'Joi', role: '温和的长期陪伴者', color: '#c6c8d9' },
-  { id: 'moss', name: 'Moss', role: '冷静的研究搭档', color: '#79bfd2' },
-  { id: 'ember', name: 'Ember', role: '直接的行动顾问', color: '#d49b79' },
-  { id: 'violet', name: 'Violet', role: '敏锐的创意伙伴', color: '#b6a1c8' },
+  { id: 'joi', name: 'Joi', role: '温和的长期陪伴者', color: '#c6c8d9', source: 'profile', selectable: true },
+  { id: 'moss', name: 'Moss', role: '冷静的研究搭档', color: '#79bfd2', source: 'profile', selectable: true },
+  { id: 'ember', name: 'Ember', role: '直接的行动顾问', color: '#d49b79', source: 'profile', selectable: true },
+  { id: 'violet', name: 'Violet', role: '敏锐的创意伙伴', color: '#b6a1c8', source: 'profile', selectable: true },
 ]
 
 export const mockTasks: Task[] = [
@@ -57,8 +57,8 @@ export const mockTasks: Task[] = [
 ]
 
 export const mockLanguages: Language[] = [
-  { code: 'ZH', label: '中文' },
-  { code: 'EN', label: 'English' },
-  { code: 'JA', label: '日本語' },
-  { code: 'KO', label: '한국어' },
+  { code: 'ZH', label: '中文', supportedTargets: ['EN', 'JA', 'KO'] },
+  { code: 'EN', label: 'English', supportedTargets: ['ZH', 'JA', 'KO'] },
+  { code: 'JA', label: '日本語', supportedTargets: ['ZH', 'EN', 'KO'] },
+  { code: 'KO', label: '한국어', supportedTargets: ['ZH', 'EN', 'JA'] },
 ]

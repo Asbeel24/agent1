@@ -970,6 +970,26 @@ a:focus-visible {
   box-shadow: 0 0 1rem currentColor;
 }
 
+.persona-section-label {
+  padding: 1.35rem 0 0.55rem;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 0.48rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.persona-option[data-readonly='true'] {
+  cursor: default;
+  opacity: 0.52;
+}
+
+.persona-option[data-readonly='true']:hover {
+  padding-right: 0;
+  padding-left: 0;
+  color: var(--ink-soft);
+}
+
 .task-drawer ol {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

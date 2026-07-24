@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { Header } from './features/shell/Header'
 import { Footer } from './features/shell/Footer'
 import { OrbStage } from './features/orb/OrbStage'
@@ -10,6 +10,7 @@ import { PersonaDrawer } from './features/drawer/PersonaDrawer'
 import { TaskDrawer } from './features/drawer/TaskDrawer'
 import { FieldCursor } from './features/cursor/FieldCursor'
 import { useAsync } from './hooks/useAsync'
+import { useAgent1Realtime } from './hooks/useAgent1Realtime'
 import { useCustomCursor } from './hooks/useCustomCursor'
 import { useEntranceTimeline } from './hooks/useEntranceTimeline'
 import { useGestureEngine } from './hooks/useGestureEngine'
@@ -19,9 +20,9 @@ import { useOrbSync } from './hooks/useOrbSync'
 import { useRecordingSoundEffects } from './hooks/useRecordingSoundEffects'
 import { useSceneReentrance } from './hooks/useSceneReentrance'
 import { useTaskMarkers } from './hooks/useTaskMarkers'
-import { getPersonas, getScenes, getTasks, languages } from './services'
-import { mockPersonas, mockScenes, mockTasks } from './services/mock'
-import type { Persona, Scene, SceneId, Task, VoiceState } from './types'
+import { getLanguages, getPersonas, getScenes, getTasks } from './services'
+import { mockLanguages, mockPersonas, mockScenes, mockTasks } from './services/mock'
+import type { Language, Persona, Scene, SceneId, Task, VoiceState } from './types'
 
 export default function App() {
   const rootRef = useRef<HTMLDivElement>(null)
@@ -40,19 +41,39 @@ export default function App() {
   const scenesQuery = useAsync(getScenes, [])
   const personasQuery = useAsync(getPersonas, [])
   const tasksQuery = useAsync(getTasks, [])
+  const languagesQuery = useAsync(getLanguages, [])
   const scenes: Scene[] = scenesQuery.data ?? mockScenes
   const personas: Persona[] = personasQuery.data ?? mockPersonas
   const tasks: Task[] = tasksQuery.data ?? mockTasks
+  const languages: Language[] = languagesQuery.data ?? mockLanguages
 
   const activeScene = scenes.find((scene) => scene.id === sceneId) ?? scenes[1]
   const activePersona = personas.find((persona) => persona.id === personaId) ?? personas[0]
   const activeColor = sceneId === 'personas' ? activePersona.color : activeScene.color
+
+  useEffect(() => {
+    if (!personas.some((persona) => persona.id === personaId && persona.selectable)) {
+      const fallback = personas.find((persona) => persona.selectable)
+      if (fallback) setPersonaId(fallback.id)
+    }
+  }, [personaId, personas])
+  const {
+    status: realtimeStatus,
+    sendAudioFrame,
+    commitAudio,
+    selectProfile,
+  } = useAgent1Realtime({
+    sceneId,
+    sourceLanguage: languages[sourceLanguage]?.code ?? 'ZH',
+    targetLanguage: languages[targetLanguage]?.code ?? 'EN',
+  })
 
   const { playRecordingStart, playRecordingStop } = useRecordingSoundEffects()
   const { microphoneState, recordingSeconds } = useMicrophoneInput({
     active: voiceState === 'listening',
     rootRef,
     onDenied: () => setVoiceState('idle'),
+    onPcmFrame: sendAudioFrame,
   })
   useMeetingTransition({ rootRef, sceneId, textOpen: meetingTextOpen })
 
@@ -64,13 +85,16 @@ export default function App() {
 
   const selectScene = useCallback(
     (nextScene: SceneId) => {
-      if (voiceState === 'listening') playRecordingStop()
+      if (voiceState === 'listening') {
+        playRecordingStop()
+        commitAudio()
+      }
       setSceneId(nextScene)
       setPersonaOpen(nextScene === 'personas')
       setMeetingTextOpen(false)
       setVoiceState('idle')
     },
-    [voiceState, playRecordingStop],
+    [voiceState, playRecordingStop, commitAudio],
   )
 
   const toggleMeetingText = useCallback((open: boolean) => {
@@ -92,37 +116,47 @@ export default function App() {
     (side: 'source' | 'target') => {
       if (side === 'source') {
         setSourceLanguage((current) => {
-          let next = (current + 1) % languages.length
-          if (next === targetLanguage) next = (next + 1) % languages.length
-          return next
+          for (let offset = 1; offset <= languages.length; offset += 1) {
+            const next = (current + offset) % languages.length
+            if (next !== targetLanguage && supportsPair(languages[next], languages[targetLanguage])) {
+              return next
+            }
+          }
+          return current
         })
         return
       }
       setTargetLanguage((current) => {
-        let next = (current + 1) % languages.length
-        if (next === sourceLanguage) next = (next + 1) % languages.length
-        return next
+        for (let offset = 1; offset <= languages.length; offset += 1) {
+          const next = (current + offset) % languages.length
+          if (next !== sourceLanguage && supportsPair(languages[sourceLanguage], languages[next])) {
+            return next
+          }
+        }
+        return current
       })
     },
-    [sourceLanguage, targetLanguage],
+    [languages, sourceLanguage, targetLanguage],
   )
 
   const swapLanguages = useCallback(() => {
+    if (!supportsPair(languages[targetLanguage], languages[sourceLanguage])) return
     setSourceLanguage(targetLanguage)
     setTargetLanguage(sourceLanguage)
     window.particleOrb?.trigger('burst', { intensity: 0.42, duration: 0.75 })
-  }, [sourceLanguage, targetLanguage])
+  }, [languages, sourceLanguage, targetLanguage])
 
   const cycleVoiceState = useCallback(() => {
     if (microphoneState === 'requesting') return
     if (voiceState === 'listening') {
       playRecordingStop()
+      commitAudio()
       setVoiceState('idle')
       return
     }
     playRecordingStart()
     setVoiceState('listening')
-  }, [microphoneState, voiceState, playRecordingStart, playRecordingStop])
+  }, [microphoneState, voiceState, playRecordingStart, playRecordingStop, commitAudio])
 
   const handleOrbActivation = useCallback(() => {
     if (suppressOrbClickRef.current || gestureLockRef.current) return
@@ -142,9 +176,12 @@ export default function App() {
   }, [])
 
   const selectPersona = useCallback((id: string) => {
+    const persona = personas.find((candidate) => candidate.id === id)
+    if (!persona?.selectable) return
     setPersonaId(id)
+    selectProfile(id)
     window.particleOrb?.trigger('burst', { intensity: 0.48, duration: 0.8 })
-  }, [])
+  }, [personas, selectProfile])
 
   const flashTask = useCallback((taskId: string) => {
     window.particleOrb?.markers.flash(taskId, { intensity: 2.2, duration: 0.8 })
@@ -171,6 +208,7 @@ export default function App() {
         scenes={scenes}
         activeSceneId={sceneId}
         onSelectScene={selectScene}
+        realtimeStatus={realtimeStatus}
       />
 
       <main className="experience-main" id="main-experience">
@@ -229,5 +267,12 @@ export default function App() {
 
       <FieldCursor />
     </div>
+  )
+}
+
+function supportsPair(source: Language | undefined, target: Language | undefined): boolean {
+  if (!source || !target) return false
+  return source.supportedTargets.some(
+    (targetCode) => targetCode.toLowerCase() === target.code.toLowerCase(),
   )
 }

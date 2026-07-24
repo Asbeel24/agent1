@@ -15,6 +15,27 @@ export function PersonaDrawer({
   onSelectPersona,
   onClose,
 }: PersonaDrawerProps) {
+  const profiles = personas.filter((persona) => persona.source === 'profile')
+  const market = personas.filter((persona) => persona.source === 'market')
+
+  const renderPersona = (persona: Persona, index: number) => (
+    <li key={persona.id}>
+      <button
+        className="persona-option interactive-target"
+        data-active={persona.id === activePersonaId}
+        data-readonly={!persona.selectable}
+        type="button"
+        disabled={!persona.selectable}
+        onClick={() => onSelectPersona(persona.id)}
+      >
+        <small>{String(index + 1).padStart(2, '0')}</small>
+        <span>{persona.name}</span>
+        <em>{persona.role}</em>
+        <i style={{ backgroundColor: persona.color }} />
+      </button>
+    </li>
+  )
+
   return (
     <aside className="persona-drawer" data-open={open} aria-hidden={!open}>
       <div className="drawer-heading">
@@ -24,21 +45,14 @@ export function PersonaDrawer({
         </button>
       </div>
       <ol>
-        {personas.map((persona, index) => (
-          <li key={persona.id}>
-            <button
-              className="persona-option interactive-target"
-              data-active={persona.id === activePersonaId}
-              type="button"
-              onClick={() => onSelectPersona(persona.id)}
-            >
-              <small>0{index + 1}</small>
-              <span>{persona.name}</span>
-              <em>{persona.role}</em>
-              <i style={{ backgroundColor: persona.color }} />
-            </button>
-          </li>
-        ))}
+        <li className="persona-section-label">内置人格 · 可切换</li>
+        {profiles.map(renderPersona)}
+        {market.length > 0 && (
+          <>
+            <li className="persona-section-label">人格市场 · 只读预览</li>
+            {market.map((persona, index) => renderPersona(persona, profiles.length + index))}
+          </>
+        )}
       </ol>
     </aside>
   )

@@ -7,6 +7,7 @@ type UseMicrophoneInputOptions = {
   active: boolean
   rootRef: RefObject<HTMLElement | null>
   onDenied: () => void
+  onPcmFrame?: (samples: Int16Array) => void
 }
 
 const MIC_STYLE_PROPERTIES = [
@@ -33,14 +34,20 @@ export function useMicrophoneInput({
   active,
   rootRef,
   onDenied,
+  onPcmFrame,
 }: UseMicrophoneInputOptions) {
   const onDeniedRef = useRef(onDenied)
+  const onPcmFrameRef = useRef(onPcmFrame)
   const [microphoneState, setMicrophoneState] = useState<MicrophoneState>('idle')
   const [recordingSeconds, setRecordingSeconds] = useState(0)
 
   useEffect(() => {
     onDeniedRef.current = onDenied
   }, [onDenied])
+
+  useEffect(() => {
+    onPcmFrameRef.current = onPcmFrame
+  }, [onPcmFrame])
 
   useEffect(() => {
     if (!active || microphoneState !== 'active') {
@@ -67,6 +74,7 @@ export function useMicrophoneInput({
     let audioContext: AudioContext | null = null
     let source: MediaStreamAudioSourceNode | null = null
     let analyser: AnalyserNode | null = null
+    let processor: ScriptProcessorNode | null = null
 
     const denyMicrophone = () => {
       setMicrophoneState('denied')
@@ -101,6 +109,15 @@ export function useMicrophoneInput({
         analyser.smoothingTimeConstant = 0.78
         source = audioContext.createMediaStreamSource(stream)
         source.connect(analyser)
+        if (onPcmFrameRef.current) {
+          processor = audioContext.createScriptProcessor(8192, 1, 1)
+          processor.onaudioprocess = (event) => {
+            const input = event.inputBuffer.getChannelData(0)
+            onPcmFrameRef.current?.(downsampleToPcm16(input, audioContext?.sampleRate ?? 48_000))
+          }
+          source.connect(processor)
+          processor.connect(audioContext.destination)
+        }
 
         const waveform = new Uint8Array(analyser.fftSize)
         setMicrophoneState('active')
@@ -143,6 +160,10 @@ export function useMicrophoneInput({
       window.cancelAnimationFrame(animationFrame)
       source?.disconnect()
       analyser?.disconnect()
+      if (processor) {
+        processor.onaudioprocess = null
+        processor.disconnect()
+      }
       stream?.getTracks().forEach((track) => track.stop())
       if (audioContext && audioContext.state !== 'closed') {
         void audioContext.close()
@@ -152,4 +173,16 @@ export function useMicrophoneInput({
   }, [active, rootRef])
 
   return { microphoneState, recordingSeconds }
+}
+
+function downsampleToPcm16(input: Float32Array, inputSampleRate: number): Int16Array {
+  const outputLength = Math.max(1, Math.round(input.length * (16_000 / inputSampleRate)))
+  const output = new Int16Array(outputLength)
+  const ratio = input.length / outputLength
+
+  for (let index = 0; index < outputLength; index += 1) {
+    const sample = Math.max(-1, Math.min(1, input[Math.floor(index * ratio)] ?? 0))
+    output[index] = sample < 0 ? sample * 0x8000 : sample * 0x7fff
+  }
+  return output
 }
