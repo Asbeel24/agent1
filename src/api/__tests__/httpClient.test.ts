@@ -32,6 +32,28 @@ function jsonResponse(value: unknown, status = 200): Response {
 }
 
 describe('Agent1HttpClient', () => {
+  it('calls the browser fetch function without an illegal receiver binding', async () => {
+    const originalFetch = globalThis.fetch
+    const browserFetch = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ status: 'ok' }),
+    )
+    globalThis.fetch = browserFetch
+
+    try {
+      const client = new Agent1HttpClient(
+        'https://api.example.test',
+        new MemoryTokenStore(),
+      )
+      await client.request('/healthz', { authenticated: false })
+      expect(browserFetch).toHaveBeenCalledWith(
+        'https://api.example.test/healthz',
+        expect.objectContaining({ headers: expect.any(Headers) }),
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   it('refreshes both tokens and retries one unauthorized request', async () => {
     const tokens = new MemoryTokenStore()
     const fetcher = vi

@@ -12,42 +12,67 @@ import {
   saveLocalIdentity,
   type LocalIdentity,
 } from '../../auth/localIdentity'
+import { authenticateLocalIdentity } from '../../auth/backendSession'
 
 type LocalLoginGateProps = {
   children: ReactNode
   transitionMs?: number
+  authenticate?: (identity: LocalIdentity) => Promise<unknown>
 }
 
-type LoginPhase = 'idle' | 'creating' | 'complete'
+type LoginPhase = 'idle' | 'authenticating' | 'complete' | 'error'
 
 export function LocalLoginGate({
   children,
   transitionMs = 520,
+  authenticate = authenticateLocalIdentity,
 }: LocalLoginGateProps) {
   const [identity, setIdentity] = useState<LocalIdentity | null>(() => readLocalIdentity())
   const [draft] = useState(createLocalIdentity)
-  const [phase, setPhase] = useState<LoginPhase>('idle')
+  const [phase, setPhase] = useState<LoginPhase>(identity ? 'authenticating' : 'idle')
+  const [errorMessage, setErrorMessage] = useState('')
   const completionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
+    if (!identity || phase !== 'authenticating') return
+
+    let active = true
+    authenticate(identity)
+      .then(() => {
+        if (!active) return
+        completionTimerRef.current = setTimeout(() => {
+          setPhase('complete')
+        }, transitionMs)
+      })
+      .catch((error: unknown) => {
+        if (!active) return
+        setErrorMessage(
+          error instanceof Error ? error.message : '无法连接 Agent1 后端',
+        )
+        setPhase('error')
+      })
+
     return () => {
+      active = false
       if (completionTimerRef.current) clearTimeout(completionTimerRef.current)
     }
-  }, [])
+  }, [authenticate, identity, phase, transitionMs])
 
-  if (identity) return children
+  if (identity && phase === 'complete') return children
 
   const completeLocalLogin = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (phase !== 'idle') return
+    if (phase === 'authenticating') return
 
-    setPhase('creating')
-    saveLocalIdentity(draft)
-    completionTimerRef.current = setTimeout(() => {
-      setPhase('complete')
-      setIdentity(draft)
-    }, transitionMs)
+    const nextIdentity = identity ?? draft
+    if (!identity) saveLocalIdentity(nextIdentity)
+    setErrorMessage('')
+    setPhase('authenticating')
+    setIdentity(nextIdentity)
   }
+
+  const displayedIdentity = identity ?? draft
+  const isAuthenticating = phase === 'authenticating'
 
   return (
     <section
@@ -82,14 +107,14 @@ export function LocalLoginGate({
 
         <form
           className="local-login-form"
-          aria-busy={phase === 'creating'}
+          aria-busy={isAuthenticating}
           onSubmit={completeLocalLogin}
         >
           <div className="local-login-field">
             <label htmlFor="local-identity-email">本地邮箱</label>
             <input
               id="local-identity-email"
-              value={draft.email}
+              value={displayedIdentity.email}
               readOnly
               tabIndex={-1}
               autoComplete="off"
@@ -102,7 +127,7 @@ export function LocalLoginGate({
             <label htmlFor="local-identity-password">本地密码</label>
             <input
               id="local-identity-password"
-              value={draft.password}
+              value={displayedIdentity.password}
               readOnly
               tabIndex={-1}
               type="password"
@@ -114,23 +139,37 @@ export function LocalLoginGate({
           <button
             className="local-login-submit interactive-target"
             type="submit"
-            disabled={phase !== 'idle'}
+            disabled={isAuthenticating}
           >
-            <span>{phase === 'idle' ? '登录并进入' : '正在建立身份'}</span>
-            <small>{phase === 'idle' ? 'ENTER FIELD' : 'WRITING LOCAL STATE'}</small>
+            <span>
+              {isAuthenticating
+                ? '正在连接 Agent1'
+                : phase === 'error'
+                  ? '重新连接'
+                  : '登录并进入'}
+            </span>
+            <small>
+              {isAuthenticating
+                ? 'AUTHENTICATING'
+                : phase === 'error'
+                  ? 'RETRY CONNECTION'
+                  : 'ENTER FIELD'}
+            </small>
           </button>
 
           <p className="local-login-notice" aria-live="polite">
-            {phase === 'creating'
-              ? '身份正在写入此浏览器'
-              : '不连接认证服务器。清除本站浏览器数据后，此身份将被重置。'}
+            {isAuthenticating
+              ? '正在恢复或创建测试账号，并建立实时通道'
+              : phase === 'error'
+                ? `连接失败：${errorMessage}`
+                : '本地身份将自动映射到测试账号；清除本站浏览器数据后会重新创建。'}
           </p>
         </form>
       </main>
 
       <footer className="local-login-footer">
-        <span>LOCAL STORAGE / VERSION 01</span>
-        <span>NO REMOTE AUTH</span>
+        <span>LOCAL IDENTITY / VERSION 01</span>
+        <span>OPENTARS AUTH BRIDGE</span>
       </footer>
     </section>
   )

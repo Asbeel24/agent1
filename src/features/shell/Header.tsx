@@ -16,6 +16,13 @@ export function Header({
   realtimeStatus = 'idle',
 }: HeaderProps) {
   const live = realtimeStatus === 'open'
+  const statusLabel: Record<AppWsStatus, string> = {
+    idle: 'AppWS idle',
+    connecting: 'AppWS connecting',
+    open: 'AppWS live',
+    reconnecting: 'AppWS reconnecting',
+    closed: 'AppWS offline',
+  }
 
   return (
     <header className="experience-header">
@@ -32,8 +39,8 @@ export function Header({
 
       <div className="system-status">
         <span className="status-dot" />
-        <span>{live ? 'AppWS live' : 'System online'}</span>
-        <small>{live ? 'B / ONLINE' : 'CN / 16:42'}</small>
+        <span>{statusLabel[realtimeStatus]}</span>
+        <small>{live ? 'B / ONLINE' : 'B / LINKING'}</small>
       </div>
     </header>
   )

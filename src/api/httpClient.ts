@@ -73,7 +73,7 @@ export class Agent1HttpClient {
   constructor(
     readonly baseUrl = agent1Runtime.httpBaseUrl,
     readonly tokens: TokenStore = new SessionTokenStore(),
-    private readonly fetcher: typeof fetch = fetch,
+    private readonly fetcher: typeof fetch = (...args) => fetch(...args),
   ) {}
 
   async request<T>(path: string, options: Agent1RequestOptions = {}): Promise<T> {

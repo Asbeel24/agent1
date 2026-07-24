@@ -14,7 +14,8 @@
 
 首次进入页面时会生成一组仅保存在当前浏览器中的本地邮箱、密码和 `user_id`，写入
 `localStorage` 的 `agent1.local_identity.v1`。后续刷新或重新打开页面会恢复同一身份；
-清除本站浏览器数据后才会重新生成。该身份不会写入 OpenTars token，也不会向认证服务发起请求。
+清除本站浏览器数据后才会重新生成。登录门会用这组凭据自动注册或恢复 OpenTars
+测试账号，真实 access / refresh token 仍只写入当前标签页的 `sessionStorage`。
 
 后续需要隔离用户偏好或草稿时，可通过
 `scopedLocalStorageKey(identity, key)` 生成 `agent1.user.<user_id>.*` 命名空间，

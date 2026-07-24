@@ -25,7 +25,8 @@ VITE_AGENT1_API_URL=https://agent1-dev-api.bicamind.xyz
 VITE_AGENT1_WS_URL=wss://agent1-dev-api.bicamind.xyz/ws
 ```
 
-默认仍为 `mock`，确保视觉稿在没有账号和后端依赖时可运行。
+B Version 默认启用 `live`；只有显式设置 `VITE_OPENTARS_API_MODE=mock`
+或在测试环境中才使用 mock。
 
 ## 2. HTTP
 

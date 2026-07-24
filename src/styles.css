@@ -1154,7 +1154,7 @@ a:focus-visible {
     filter 420ms ease;
 }
 
-.local-login-shell[data-phase='creating'] .local-login-main {
+.local-login-shell[data-phase='authenticating'] .local-login-main {
   opacity: 0.62;
   filter: brightness(0.8);
   transform: scale(0.994);
