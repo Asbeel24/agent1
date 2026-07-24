@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Agent1AppWsClient, SessionTokenStore, agent1Runtime, type AppWsStatus } from '../api'
 import { PcmStreamPlayer, type PcmPlaybackFeedback } from '../audio/PcmStreamPlayer'
 import { CLIENT_EVENTS, SERVER_EVENTS, isAgent1ServerEvent } from '../protocol/agent1'
@@ -18,9 +18,17 @@ export function useAgent1Realtime({
   const clientRef = useRef<Agent1AppWsClient | null>(null)
   const activeTranslationPairRef = useRef<string | null>(null)
   const [status, setStatus] = useState<AppWsStatus>('idle')
+  const tokenStoreRef = useRef(new SessionTokenStore())
+  const accessToken = useSyncExternalStore(
+    (listener) => tokenStoreRef.current.subscribe(listener),
+    () => tokenStoreRef.current.getAccessToken(),
+  )
 
   useEffect(() => {
-    if (!agent1Runtime.liveApiEnabled || !new SessionTokenStore().getAccessToken()) return
+    if (!agent1Runtime.liveApiEnabled || !accessToken) {
+      setStatus('idle')
+      return
+    }
 
     const sendPlaybackFeedback = (feedback: PcmPlaybackFeedback) => {
       const client = clientRef.current
@@ -36,6 +44,7 @@ export function useAgent1Realtime({
       onFeedback: sendPlaybackFeedback,
     })
     const client = new Agent1AppWsClient({
+      tokens: tokenStoreRef.current,
       onAuthRevoked: () => setStatus('closed'),
     })
     clientRef.current = client
@@ -58,7 +67,7 @@ export function useAgent1Realtime({
       activeTranslationPairRef.current = null
       void player.close()
     }
-  }, [])
+  }, [accessToken])
 
   useEffect(() => {
     const client = clientRef.current
@@ -83,6 +92,7 @@ export function useAgent1Realtime({
   }, [sceneId, sourceLanguage, targetLanguage, status])
 
   const sendAudioFrame = useCallback((samples: Int16Array) => {
+    if (sceneId === 'meeting') return
     const client = clientRef.current
     if (!client || client.status !== 'open') return
     client.send(CLIENT_EVENTS.inputAudioAppend, {
@@ -90,13 +100,14 @@ export function useAgent1Realtime({
       sample_rate: 16_000,
       data: int16ToBase64(samples),
     })
-  }, [])
+  }, [sceneId])
 
   const commitAudio = useCallback(() => {
+    if (sceneId === 'meeting') return
     const client = clientRef.current
     if (!client || client.status !== 'open') return
     client.send(CLIENT_EVENTS.inputAudioCommit, undefined)
-  }, [])
+  }, [sceneId])
 
   const selectProfile = useCallback((profileId: string) => {
     const client = clientRef.current

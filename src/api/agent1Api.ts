@@ -1,15 +1,30 @@
 import type {
   Agent1Config,
+  AuthMeResponse,
   AuthResult,
   CalendarTaskResponse,
   DailyTaskResponse,
   DeviceInput,
+  HealthResponse,
+  MeetingAsset,
+  MeetingAssetListResponse,
+  MeetingCreateInput,
+  MeetingCreateResponse,
   MeetingDetail,
   MeetingListResponse,
   MeetingSettings,
+  MeetingShareStatus,
+  MeetingSpeakerAliasesResponse,
   MeetingSummary,
+  MeetingUpload,
+  MeetingUploadInitializeInput,
+  MeetingUploadTarget,
+  MeetingUploadTest,
   PersonaMarketResponse,
   PersonaTwin,
+  PublicMeetingDocument,
+  ReadinessResponse,
+  SuggestionDecisionResponse,
   TaskStatusResponse,
   Transcript,
 } from './contracts'
@@ -33,6 +48,14 @@ function queryString(values: Record<string, string | number | boolean | undefine
 
 export class Agent1Api {
   constructor(readonly http: Agent1HttpClient = agent1Http) {}
+
+  getHealth(): Promise<HealthResponse> {
+    return this.http.request('/healthz', { authenticated: false })
+  }
+
+  getReadiness(): Promise<ReadinessResponse> {
+    return this.http.request('/readyz', { authenticated: false })
+  }
 
   getConfig(): Promise<Agent1Config> {
     return this.http.request('/v1/config', { authenticated: false })
@@ -69,6 +92,10 @@ export class Agent1Api {
     } finally {
       this.http.tokens.clear()
     }
+  }
+
+  getMe(): Promise<AuthMeResponse> {
+    return this.http.request('/v1/me')
   }
 
   getDailyTasks(input: {
@@ -109,7 +136,7 @@ export class Agent1Api {
     taskId: string,
     decision: 'confirm' | 'ignore',
     expectedVersion: number,
-  ): Promise<{ task: Record<string, unknown>; changed: boolean }> {
+  ): Promise<SuggestionDecisionResponse> {
     return this.http.request(`/v1/tasks/${encodeURIComponent(taskId)}/suggestion-decision`, {
       method: 'POST',
       ...jsonBody({ decision, expected_version: expectedVersion }),
@@ -122,6 +149,14 @@ export class Agent1Api {
 
   generatePersonaTwin(): Promise<PersonaTwin> {
     return this.http.request('/v1/persona-twin/generate', { method: 'POST' })
+  }
+
+  publishPersonaTwin(): Promise<PersonaTwin> {
+    return this.http.request('/v1/persona-twin/publish', { method: 'POST' })
+  }
+
+  unpublishPersonaTwin(): Promise<PersonaTwin> {
+    return this.http.request('/v1/persona-twin/unpublish', { method: 'POST' })
   }
 
   renamePersonaTwin(name: string): Promise<PersonaTwin> {
@@ -156,6 +191,23 @@ export class Agent1Api {
     return this.http.request(`/v1/meetings/${encodeURIComponent(meetingId)}`)
   }
 
+  createMeeting(input: MeetingCreateInput): Promise<MeetingCreateResponse> {
+    return this.http.request('/v1/meetings', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': input.file_sha256,
+      },
+      body: JSON.stringify(input),
+    })
+  }
+
+  deleteMeeting(meetingId: string): Promise<void> {
+    return this.http.request(`/v1/meetings/${encodeURIComponent(meetingId)}`, {
+      method: 'DELETE',
+    })
+  }
+
   getTranscript(meetingId: string): Promise<Transcript> {
     return this.http.request(`/v1/meetings/${encodeURIComponent(meetingId)}/transcript`)
   }
@@ -173,6 +225,121 @@ export class Agent1Api {
   summarizeMeeting(meetingId: string): Promise<{ meeting_id: string; status: string }> {
     return this.http.request(`/v1/meetings/${encodeURIComponent(meetingId)}/summarize`, {
       method: 'POST',
+    })
+  }
+
+  updateMeetingSpeakerAliases(
+    meetingId: string,
+    aliases: Record<string, string>,
+  ): Promise<MeetingSpeakerAliasesResponse> {
+    return this.http.request(`/v1/meetings/${encodeURIComponent(meetingId)}/speaker-aliases`, {
+      method: 'PUT',
+      ...jsonBody({ aliases }),
+    })
+  }
+
+  listMeetingAssets(meetingId: string): Promise<MeetingAssetListResponse> {
+    return this.http.request(`/v1/meetings/${encodeURIComponent(meetingId)}/assets`)
+  }
+
+  uploadMeetingAsset(
+    meetingId: string,
+    assetType: string,
+    body: Blob | ArrayBuffer,
+    contentType = 'application/octet-stream',
+  ): Promise<MeetingAsset> {
+    return this.http.request(
+      `/v1/meetings/${encodeURIComponent(meetingId)}/assets/${encodeURIComponent(assetType)}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': contentType },
+        body,
+      },
+    )
+  }
+
+  downloadMeetingAsset(meetingId: string, assetType: string): Promise<Blob> {
+    return this.http.request(
+      `/v1/meetings/${encodeURIComponent(meetingId)}/assets/${encodeURIComponent(assetType)}`,
+    )
+  }
+
+  downloadMeetingAudio(meetingId: string): Promise<Blob> {
+    return this.http.request(`/v1/meetings/${encodeURIComponent(meetingId)}/audio`)
+  }
+
+  downloadMeetingCapability(token: string): Promise<Blob> {
+    return this.http.request(`/v1/meeting-assets/access/${encodeURIComponent(token)}`, {
+      authenticated: false,
+    })
+  }
+
+  initializeMeetingUpload(
+    input: MeetingUploadInitializeInput,
+    idempotencyKey: string,
+  ): Promise<MeetingUpload> {
+    return this.http.request('/v1/meeting-uploads', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': idempotencyKey,
+      },
+      body: JSON.stringify(input),
+    })
+  }
+
+  getMeetingUpload(uploadId: string): Promise<MeetingUpload> {
+    return this.http.request(`/v1/meeting-uploads/${encodeURIComponent(uploadId)}`)
+  }
+
+  refreshMeetingUploadCredentials(uploadId: string): Promise<MeetingUploadTarget> {
+    return this.http.request(
+      `/v1/meeting-uploads/${encodeURIComponent(uploadId)}/credentials`,
+      { method: 'POST' },
+    )
+  }
+
+  completeMeetingUpload(uploadId: string): Promise<MeetingUpload> {
+    return this.http.request(`/v1/meeting-uploads/${encodeURIComponent(uploadId)}/complete`, {
+      method: 'POST',
+    })
+  }
+
+  abortMeetingUpload(uploadId: string): Promise<void> {
+    return this.http.request(`/v1/meeting-uploads/${encodeURIComponent(uploadId)}`, {
+      method: 'DELETE',
+    })
+  }
+
+  createMeetingUploadTest(): Promise<MeetingUploadTest> {
+    return this.http.request('/v1/meeting-upload-tests', { method: 'POST' })
+  }
+
+  deleteMeetingUploadTest(testId: string): Promise<void> {
+    return this.http.request(`/v1/meeting-upload-tests/${encodeURIComponent(testId)}`, {
+      method: 'DELETE',
+    })
+  }
+
+  getMeetingShare(meetingId: string): Promise<MeetingShareStatus> {
+    return this.http.request(`/v1/meetings/${encodeURIComponent(meetingId)}/share`)
+  }
+
+  createMeetingShare(meetingId: string): Promise<MeetingShareStatus> {
+    return this.http.request(`/v1/meetings/${encodeURIComponent(meetingId)}/share`, {
+      method: 'POST',
+    })
+  }
+
+  revokeMeetingShare(meetingId: string): Promise<void> {
+    return this.http.request(`/v1/meetings/${encodeURIComponent(meetingId)}/share`, {
+      method: 'DELETE',
+    })
+  }
+
+  getPublicMeetingShare(token: string): Promise<PublicMeetingDocument> {
+    return this.http.request(`/v1/public/meeting-shares/${encodeURIComponent(token)}`, {
+      authenticated: false,
     })
   }
 }

@@ -9,5 +9,6 @@ vite.config.d.ts
 .DS_Store
 .vercel
 .env*
+!.env.example
 .wrangler/
 .dev.vars*

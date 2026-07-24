@@ -192,4 +192,18 @@ npm run build
 npm run preview
 ```
 
+### 连接 OpenTars 后端
+
+B Version 的视觉和交互层保持不变，接口层对齐
+[`0xdenny218/opentars`](https://github.com/0xdenny218/opentars)。
+复制 `.env.example` 后配置 `VITE_OPENTARS_*` 变量即可切换到 live 模式。
+完整路由矩阵、鉴权与 AppWS 说明见
+[`docs/B_VERSION_API_ALIGNMENT.md`](docs/B_VERSION_API_ALIGNMENT.md)。
+
+如果 OpenTars 源码位于相邻目录，可直接校验当前 Swagger：
+
+```bash
+npm run contract:check -- ../opentars/server/swaggerdocs/swagger.json
+```
+
 `dist/` 是纯静态产物，可直接部署到 Vercel、Netlify、Cloudflare Pages 或任意静态服务器。构建命令为 `npm run build`，发布目录为 `dist`。

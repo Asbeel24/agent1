@@ -8,6 +8,16 @@ export type ApiErrorPayload = {
         message: string
       }
 }
+
+export type HealthResponse = {
+  status: string
+  service: string
+}
+
+export type ReadinessResponse = {
+  status: string
+  checks: Record<string, { status: string; error?: string }>
+}
 export type DeviceInput = {
   platform_family: string
   installation_id: string
@@ -47,6 +57,8 @@ export type AuthResult = {
   device: AuthDevice
   auth_session: AuthSession
 }
+
+export type AuthMeResponse = Pick<AuthResult, 'user' | 'device' | 'auth_session'>
 
 export type TranslationLanguage = {
   code: string
@@ -139,6 +151,11 @@ export type CalendarTaskResponse = {
   tasks: CalendarTask[]
 }
 
+export type SuggestionDecisionResponse = {
+  task: CalendarTask
+  changed: boolean
+}
+
 export type TaskStatusResponse = {
   task: {
     id: string
@@ -224,6 +241,20 @@ export type Meeting = {
   processing_status: MeetingProcessingStatus
   upload_status?: string
   speaker_diarization_enabled?: boolean
+  audio_url?: string
+  confirmed_bytes?: number
+  error_code?: string
+  file_path?: string
+  processing_generation?: number
+  recording_source?: string
+  title_source?: string
+  total_bytes?: number
+  transcription_progress?: {
+    completed_parts?: number
+    failed_parts?: number
+    total_parts?: number
+  }
+  uploaded_at?: string
 }
 
 export type MeetingListResponse = {
@@ -295,4 +326,104 @@ export type MeetingSummary = {
     context: string
     source_start_ms: number | null
   }>
+}
+
+export type MeetingCreateInput = {
+  asset_ref: string
+  file_sha256: string
+}
+
+export type MeetingCreateResponse = {
+  meeting_id: string
+  processing_status: string
+  title: string
+  uploaded_at: string
+}
+
+export type MeetingAsset = {
+  asset_type: string
+  bytes_written: number
+  checksum_sha256: string
+  content_type: string
+  created_at: string
+  meeting_id: string
+  updated_at: string
+}
+
+export type MeetingAssetListResponse = {
+  assets: MeetingAsset[]
+}
+
+export type MeetingSpeaker = {
+  speaker_id: string
+  display_name: string
+  alias: string
+}
+
+export type MeetingSpeakerAliasesResponse = {
+  meeting_id: string
+  speakers: MeetingSpeaker[]
+}
+
+export type MeetingUploadInitializeInput = {
+  channels: number
+  content_type: string
+  duration_ms: number
+  file_sha256: string
+  file_size: number
+  format: string
+  sample_rate: number
+}
+
+export type MeetingUploadCredentials = {
+  access_key_id: string
+  expires_at: number
+  secret_access_key: string
+  session_token: string
+}
+
+export type MeetingUploadTarget = {
+  bucket: string
+  credentials: MeetingUploadCredentials
+  endpoint: string
+  object_key: string
+  provider: string
+  region: string
+}
+
+export type MeetingUpload = {
+  asset_ref?: string
+  error?: {
+    code: string
+    message: string
+  }
+  expires_at: string
+  meeting_id?: string
+  mode: string
+  status: string
+  storage?: MeetingUploadTarget
+  total_bytes: number
+  upload_id: string
+}
+
+export type MeetingUploadTest = {
+  storage: MeetingUploadTarget
+  test_id: string
+}
+
+export type MeetingShareStatus = {
+  active: boolean
+  created_at?: number
+  url?: string
+}
+
+export type PublicMeetingDocument = {
+  meeting: {
+    duration_ms: number
+    ended_at: string
+    started_at: string
+    title: string
+  }
+  summary: Omit<MeetingSummary, 'meeting_id'>
+  transcript: Omit<Transcript, 'meeting_id'>
 }

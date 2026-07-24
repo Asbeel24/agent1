@@ -17,6 +17,14 @@ export const CLIENT_EVENTS = {
   onboardingSkip: 'client.onboarding.skip',
   translationStart: 'client.translation.start',
   translationStop: 'client.translation.stop',
+  healthSample: 'client.health.sample',
+  healthBatch: 'client.health.batch',
+  healthSummary: 'client.health.summary',
+  healthAlertDismiss: 'client.health.alert.dismiss',
+  healthMute: 'client.health.mute',
+  healthRuleDisable: 'client.health.rule.disable',
+  healthRuleEnable: 'client.health.rule.enable',
+  healthQuietHoursUpdate: 'client.health.quiet_hours.update',
   voiceSelect: 'client.voice.select',
   profileSelect: 'client.profile.select',
   memoryUndo: 'client.memory.undo',
@@ -63,6 +71,9 @@ export const SERVER_EVENTS = {
   healthAlert: 'server.health.alert',
   healthPolicyChanged: 'server.health.policy.changed',
   healthAlertDismissed: 'server.health.alert.dismissed',
+  intentRouteTrace: 'server.intent.route_trace',
+  focusDecisionTrace: 'server.focus.decision_trace',
+  plannerTrajectoryTrace: 'server.planner.trajectory_trace',
 } as const
 
 export type AppWsEnvelope<EventName extends string = string, Data = unknown> = {
@@ -121,12 +132,12 @@ export type ProfileSettings = {
 
 export type TaskDraft = {
   draft_id: string
-  session_id: string
-  original_text: string
-  task_type: string
-  slots: Record<string, unknown>
-  missing_fields: string[]
-  clarification_question: string
+  session_id?: string
+  original_text?: string
+  task_type?: string
+  slots?: Record<string, string>
+  missing_fields?: string[]
+  clarification_question?: string
   state: 'draft' | 'awaiting_details' | 'ready' | string
   updated_at: number
 }
@@ -134,34 +145,49 @@ export type TaskDraft = {
 export type TaskStep = {
   step_id: string
   root_task_id: string
-  provider: string
-  provider_task_id: string
-  session_key: string
-  title: string
-  instruction: string
-  depends_on: string[]
+  provider?: string
+  provider_task_id?: string
+  session_key?: string
+  title?: string
+  instruction?: string
+  depends_on?: string[]
   state: string
-  progress: string
-  result: string
-  error: string
-  started_at: number
-  completed_at: number
-  updated_at: number
+  progress?: string
+  result?: string
+  error?: string
+  started_at?: number
+  completed_at?: number
+  updated_at?: number
 }
 
 export type TaskStepEvent = {
   step_id: string
   root_task_id: string
-  provider: string
-  provider_task_id: string
-  session_key: string
+  provider?: string
+  provider_task_id?: string
+  session_key?: string
   state: string
-  message: string
-  result: string
-  error: string
-  elapsed_seconds: number
-  updated_at: number
+  message?: string
+  result?: string
+  error?: string
+  elapsed_seconds?: number
+  updated_at?: number
 }
+
+export type HealthSample = {
+  schema_version: string
+  source: string
+  device_id?: string
+  metric: string
+  value: number
+  unit?: string
+  observed_at: number
+  confidence?: number
+  quality?: string
+  metadata?: Record<string, string>
+}
+
+export type HealthBatchSample = Omit<HealthSample, 'schema_version' | 'source' | 'device_id'>
 
 export type ClientEventMap = {
   [CLIENT_EVENTS.inputAudioAppend]: InputAudioPacket
@@ -188,6 +214,32 @@ export type ClientEventMap = {
     target_lang?: string
   }
   [CLIENT_EVENTS.translationStop]: undefined
+  [CLIENT_EVENTS.healthSample]: HealthSample
+  [CLIENT_EVENTS.healthBatch]: {
+    schema_version: string
+    source: string
+    device_id?: string
+    samples: HealthBatchSample[]
+  }
+  [CLIENT_EVENTS.healthSummary]: {
+    schema_version: string
+    source: string
+    device_id?: string
+    metric: string
+    window_start: number
+    window_end: number
+    values?: Record<string, number>
+    metadata?: Record<string, string>
+  }
+  [CLIENT_EVENTS.healthAlertDismiss]: { alert_id: string; reason?: string }
+  [CLIENT_EVENTS.healthMute]: {
+    duration_seconds?: number
+    mute_until?: number
+    reason?: string
+  }
+  [CLIENT_EVENTS.healthRuleDisable]: { rule_id: string }
+  [CLIENT_EVENTS.healthRuleEnable]: { rule_id: string }
+  [CLIENT_EVENTS.healthQuietHoursUpdate]: { start: string; end: string }
   [CLIENT_EVENTS.voiceSelect]: {
     voice_id: string
   }
@@ -206,7 +258,7 @@ export type ServerEventMap = {
   }
   [SERVER_EVENTS.cloudEvent]: {
     type: string
-    payload: Record<string, unknown>
+    payload?: Record<string, unknown>
   }
   [SERVER_EVENTS.error]: {
     code: string
@@ -237,7 +289,7 @@ export type ServerEventMap = {
     sample_rate: number
   }
   [SERVER_EVENTS.sessionModeChanged]: {
-    mode: 'voice_agent' | 'translation' | string
+    mode: 'none' | 'translation' | 'silence' | string
     reason?: string
   }
   [SERVER_EVENTS.voiceSettings]: VoiceSettings
@@ -318,7 +370,7 @@ export type ServerEventMap = {
     undoable: boolean
   }
   [SERVER_EVENTS.memoryUndoResult]: {
-    request_id: string
+    request_id?: string
     ok: boolean
     change?: {
       change_id: string
@@ -326,13 +378,22 @@ export type ServerEventMap = {
       summary: string
       undoable: boolean
     }
-    code: string
-    message: string
+    code?: string
+    message?: string
   }
   [SERVER_EVENTS.healthAlert]: Record<string, unknown>
   [SERVER_EVENTS.healthPolicyChanged]: Record<string, unknown>
   [SERVER_EVENTS.healthAlertDismissed]: {
     alert_id: string
+  }
+  [SERVER_EVENTS.intentRouteTrace]: Record<string, unknown> & { route: string }
+  [SERVER_EVENTS.focusDecisionTrace]: Record<string, unknown>
+  [SERVER_EVENTS.plannerTrajectoryTrace]: Record<string, unknown> & {
+    input_id: string
+    ref_id: string
+    state: string
+    schema: string
+    read_tools: string[]
   }
 }
 
@@ -396,7 +457,7 @@ export function isAgent1ServerEvent(value: unknown): value is Agent1ServerEvent 
     case SERVER_EVENTS.connected:
       return hasString(data, 'session_id')
     case SERVER_EVENTS.cloudEvent:
-      return hasString(data, 'type') && isRecord(data.payload)
+      return hasString(data, 'type') && (data.payload === undefined || isRecord(data.payload))
     case SERVER_EVENTS.error:
       return hasString(data, 'code') && hasString(data, 'message')
     case SERVER_EVENTS.responseAudio:
@@ -437,7 +498,6 @@ export function isAgent1ServerEvent(value: unknown): value is Agent1ServerEvent 
     case SERVER_EVENTS.taskReady:
       return (
         hasString(data, 'draft_id') &&
-        hasString(data, 'session_id') &&
         hasString(data, 'state') &&
         hasNumber(data, 'updated_at')
       )
@@ -457,8 +517,7 @@ export function isAgent1ServerEvent(value: unknown): value is Agent1ServerEvent 
       return (
         hasString(data, 'step_id') &&
         hasString(data, 'root_task_id') &&
-        hasString(data, 'state') &&
-        hasNumber(data, 'elapsed_seconds')
+        hasString(data, 'state')
       )
     case SERVER_EVENTS.onboardingStarted:
       return hasNumber(data, 'total')
@@ -478,7 +537,7 @@ export function isAgent1ServerEvent(value: unknown): value is Agent1ServerEvent 
         hasBoolean(data, 'undoable')
       )
     case SERVER_EVENTS.memoryUndoResult:
-      return hasString(data, 'request_id') && hasBoolean(data, 'ok')
+      return hasBoolean(data, 'ok')
     case SERVER_EVENTS.voiceSettings:
     case SERVER_EVENTS.voiceChanged:
       return hasString(data, 'current_voice_id') && Array.isArray(data.options)
@@ -490,6 +549,18 @@ export function isAgent1ServerEvent(value: unknown): value is Agent1ServerEvent 
       return true
     case SERVER_EVENTS.healthAlertDismissed:
       return hasString(data, 'alert_id')
+    case SERVER_EVENTS.intentRouteTrace:
+      return hasString(data, 'route')
+    case SERVER_EVENTS.focusDecisionTrace:
+      return true
+    case SERVER_EVENTS.plannerTrajectoryTrace:
+      return (
+        hasString(data, 'input_id') &&
+        hasString(data, 'ref_id') &&
+        hasString(data, 'state') &&
+        hasString(data, 'schema') &&
+        Array.isArray(data.read_tools)
+      )
     default:
       return false
   }

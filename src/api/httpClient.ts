@@ -13,23 +13,42 @@ export interface TokenStore {
 
 export class SessionTokenStore implements TokenStore {
   getAccessToken(): string | null {
-    return sessionStorage.getItem(ACCESS_TOKEN_KEY) || import.meta.env.VITE_AGENT1_ACCESS_TOKEN || null
+    return (
+      sessionStorage.getItem(ACCESS_TOKEN_KEY) ||
+      import.meta.env.VITE_OPENTARS_ACCESS_TOKEN ||
+      import.meta.env.VITE_AGENT1_ACCESS_TOKEN ||
+      null
+    )
   }
 
   getRefreshToken(): string | null {
-    return sessionStorage.getItem(REFRESH_TOKEN_KEY) || import.meta.env.VITE_AGENT1_REFRESH_TOKEN || null
+    return (
+      sessionStorage.getItem(REFRESH_TOKEN_KEY) ||
+      import.meta.env.VITE_OPENTARS_REFRESH_TOKEN ||
+      import.meta.env.VITE_AGENT1_REFRESH_TOKEN ||
+      null
+    )
   }
 
   setTokens(result: Pick<AuthResult, 'access_token' | 'refresh_token'>): void {
     sessionStorage.setItem(ACCESS_TOKEN_KEY, result.access_token)
     sessionStorage.setItem(REFRESH_TOKEN_KEY, result.refresh_token)
+    window.dispatchEvent(new Event(TOKEN_CHANGE_EVENT))
   }
 
   clear(): void {
     sessionStorage.removeItem(ACCESS_TOKEN_KEY)
     sessionStorage.removeItem(REFRESH_TOKEN_KEY)
+    window.dispatchEvent(new Event(TOKEN_CHANGE_EVENT))
+  }
+
+  subscribe(listener: () => void): () => void {
+    window.addEventListener(TOKEN_CHANGE_EVENT, listener)
+    return () => window.removeEventListener(TOKEN_CHANGE_EVENT, listener)
   }
 }
+
+const TOKEN_CHANGE_EVENT = 'opentars:tokens-changed'
 
 export class Agent1ApiError extends Error {
   readonly status: number

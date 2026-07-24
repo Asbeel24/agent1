@@ -60,4 +60,54 @@ describe('Agent1 AppWS protocol', () => {
       }),
     ).toBe(false)
   })
+
+  it('accepts optional fields omitted by current Go AppWS structs', () => {
+    expect(
+      isAgent1ServerEvent({
+        event: SERVER_EVENTS.taskDraftCreated,
+        data: {
+          draft_id: 'draft-1',
+          state: 'draft',
+          updated_at: 1,
+        },
+      }),
+    ).toBe(true)
+    expect(
+      isAgent1ServerEvent({
+        event: SERVER_EVENTS.taskStepProgress,
+        data: {
+          step_id: 'step-1',
+          root_task_id: 'task-1',
+          state: 'running',
+        },
+      }),
+    ).toBe(true)
+    expect(
+      isAgent1ServerEvent({
+        event: SERVER_EVENTS.memoryUndoResult,
+        data: { ok: false, code: 'not_undoable' },
+      }),
+    ).toBe(true)
+  })
+
+  it('recognizes current OpenTars observability events', () => {
+    expect(
+      isAgent1ServerEvent({
+        event: SERVER_EVENTS.intentRouteTrace,
+        data: { route: 'foreground', source: 'resolved_gate' },
+      }),
+    ).toBe(true)
+    expect(
+      isAgent1ServerEvent({
+        event: SERVER_EVENTS.plannerTrajectoryTrace,
+        data: {
+          input_id: 'input-1',
+          ref_id: 'trace-1',
+          state: 'done',
+          schema: 'v1',
+          read_tools: [],
+        },
+      }),
+    ).toBe(true)
+  })
 })

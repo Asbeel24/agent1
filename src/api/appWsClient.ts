@@ -145,9 +145,10 @@ export class Agent1AppWsClient {
         this.eventListeners.forEach((listener) => listener(parsed))
         return
       }
+      const payload = parsed.data.payload
       const reason =
-        typeof parsed.data.payload.reason === 'string'
-          ? parsed.data.payload.reason
+        payload && typeof payload.reason === 'string'
+          ? payload.reason
           : 'auth_session_revoked'
       this.authRevoked = true
       this.tokens.clear()

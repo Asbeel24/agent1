@@ -1,10 +1,26 @@
 const DEFAULT_HTTP_BASE_URL = 'https://agent1-dev-api.bicamind.xyz'
 const DEFAULT_APP_WS_URL = 'wss://agent1-dev-api.bicamind.xyz/ws'
 
+function firstDefined(...values: Array<string | undefined>): string | undefined {
+  return values.find((value) => value?.trim())?.trim()
+}
+
+const apiMode = firstDefined(
+  import.meta.env.VITE_OPENTARS_API_MODE,
+  import.meta.env.VITE_AGENT1_API_MODE,
+)
+
 export const agent1Runtime = {
-  httpBaseUrl: (import.meta.env.VITE_AGENT1_API_URL || DEFAULT_HTTP_BASE_URL).replace(/\/$/, ''),
-  appWsUrl: import.meta.env.VITE_AGENT1_WS_URL || DEFAULT_APP_WS_URL,
-  liveApiEnabled: import.meta.env.VITE_AGENT1_API_MODE === 'live',
+  httpBaseUrl: (
+    firstDefined(
+      import.meta.env.VITE_OPENTARS_API_BASE_URL,
+      import.meta.env.VITE_AGENT1_API_URL,
+    ) || DEFAULT_HTTP_BASE_URL
+  ).replace(/\/$/, ''),
+  appWsUrl:
+    firstDefined(import.meta.env.VITE_OPENTARS_WS_URL, import.meta.env.VITE_AGENT1_WS_URL) ||
+    DEFAULT_APP_WS_URL,
+  liveApiEnabled: apiMode === 'live',
 } as const
 
 export function getDefaultDeviceInput() {
