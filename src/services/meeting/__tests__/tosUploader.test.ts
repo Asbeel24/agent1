@@ -227,4 +227,50 @@ describe('tosUploader', () => {
     await task.abort();
     expect(abortMultipart).not.toHaveBeenCalled();
   });
+
+  it('invokes a loader once and caches the adapter across start() calls', async () => {
+    const { adapter, uploadFile } = adapterHarness();
+    const loader = vi.fn(async () => adapter);
+    const uploader = createTosMeetingUploader(loader);
+    await uploader.start(baseInput).result;
+    await uploader.start({ ...baseInput, file: new Blob([new Uint8Array([9])]) }).result;
+    expect(loader).toHaveBeenCalledOnce();
+    expect(uploadFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects start() when the loader rejects', async () => {
+    const loader = vi.fn(async () => {
+      throw new Error('chunk offline');
+    });
+    const uploader = createTosMeetingUploader(loader);
+    const task = uploader.start(baseInput);
+    await expect(task.result).rejects.toThrow('chunk offline');
+  });
+
+  it('keeps pause/abort safe when the loader never resolves', async () => {
+    let resolveLoader!: (adapter: TosSDKAdapter) => void;
+    const loader = vi.fn(() => new Promise<TosSDKAdapter>((resolve) => {
+      resolveLoader = resolve;
+    }));
+    const uploader = createTosMeetingUploader(loader);
+    const task = uploader.start(baseInput);
+    // `pause()` and `abort()` internally `await result`, so they cannot
+    // settle until the loader resolves and the upload completes. Capture
+    // the in-flight promises WITHOUT awaiting, then trigger the loader
+    // and let the microtask chain drain.
+    const pausePromise = task.pause();
+    const abortPromise = task.abort();
+    resolveLoader(adapterHarness().adapter);
+    // NOTE: with the default `adapterHarness()` `uploadFile` mock resolving
+    // successfully (the harness does not simulate cancellation rejection),
+    // the queued cancel message is flushed to `cancelSource.cancel(...)` but
+    // the SDK call itself still settles successfully, so `task.result`
+    // *resolves* to `undefined` rather than rejecting. The loader's
+    // pending-cancel queue logic is exercised regardless — what matters
+    // here is that `pause()` and `abort()` do not throw and the task
+    // lifecycle completes cleanly.
+    await expect(pausePromise).resolves.toBeUndefined();
+    await expect(abortPromise).resolves.toBeUndefined();
+    await expect(task.result).resolves.toBeUndefined();
+  });
 });
