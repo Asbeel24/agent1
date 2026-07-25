@@ -511,3 +511,85 @@ npm run dev                       # 在 http://localhost:5173 进入「会议」
 | `GET /v1/meetings` | 返回空列表 |
 | `GET /v1/persona-twin` | 当前返回 404，未被 UI 使用，可接受 |
 
+## 14. 人格市场接口现状（2026-07-25）
+
+把 `/v1/persona-twins/market` 从 `server/httpserver/router.go` 拆出来看了一遍——HTTP 层已经完整，但**作为 demo** 还有几块没闭环。
+
+### 已经做完的
+
+| 层 | 文件 | 状态 |
+|---|---|---|
+| HTTP 路由 + 入参解析 | `server/personatwins/handler.go:206 Market` | OK，支持 `limit`、`cursor` |
+| Service 校验与游标编解码 | `personatwin/service.go:144 ListMarket` | OK，默认 20/页、限上限、`use_count` 倒序游标 |
+| PG 持久化 | `server/stores/postgres/persona_twin_store.go:161 ListMarket` | OK，`is_published=true` 过滤 |
+| 表结构 | `migrations/postgres/0015_persona_twins.up.sql` | OK |
+| MarketItem schema | `personatwin/types.go:80` | OK，6 个字段 |
+
+也就是说，对一个**有数据的 PG 库**，HTTP 调用一切正常；响应与 `MarketItem` JSON shape 与 curl 实测结果一致。
+
+### 没有完成（demo 缺口）
+
+1. **没有 INSERT seed migration**：`0015_persona_twins.up.sql` 只 `CREATE TABLE` / 索引 / 外键，**没有任何 seed insert**。
+   - 你看到的 45 条人格（林序、Mia Chen…）来自 dev 部署历史的手工插入或 e2e seed——fresh 数据库起出来 market 是空的。
+   - 想"开箱有数据"，要么写一份 `0016_persona_twins_seed.up.sql`，要么在 e2e harness 跑 `cmd/opentars-server-api-e2e/main.go`。
+2. **`/v1/persona-twin`（自有人格）dev 实例返回 404**：路由在 router.go 已挂，但 dev 实例没注册。这条卡死了所有 publish/unpublish/use_count++ 链路。
+3. **没有 use 入口**：market 排序列是 `use_count DESC`，但代码里没看到调用 `IncrementUseCount` 的位置。use_count 永远初始为 0，market 排序退化成 `created_at DESC`。
+4. **没有命名的语义化"市场排序算法"**——就是 `ORDER BY use_count DESC, created_at DESC, id DESC`，文档里没写。
+
+### 本地起后端人工测试：可行，但要一组硬依赖
+
+`make dev-up-deps && make server-migrate-dev && make run-server-dev` 的依赖谱：
+
+| 组件 | 来源 | 替代品 |
+|---|---|---|
+| PostgreSQL 16 | `docker compose up postgres` | Docker Desktop/OrbStack，无需凭据 |
+| Redis 7 | `docker compose up redis` | 同上 |
+| OpenClaw | `docker compose up openclaw` | `OPENCLAW_GATEWAY_PORT` 为空就不强校验 |
+| 火山 TOS | `server.local.toml` `[object_storage]` | **不可替代**；启动期会对 bucket 做 PutObject + DeleteObject probe，缺凭据会 exit |
+| 语音 provider | `core.local.toml` `[voice] enabled=false` 即跳过 | 不发语音可以不配 |
+| Intent LLM | `core.local.toml` `[intent]` | 同上，persona-twin 不依赖 |
+
+### 启起来之后的 curl 步骤
+
+```bash
+# 1. 准备 server.local.toml
+make dev-config            # 拷贝 deploy/config/server.example.toml + core.example.toml
+# 编辑 deploy/config/server.local.toml，只改 [object_storage]：
+#   access_key = "AK..."
+#   secret_key = "SK..."
+#   bucket     = "bicamind-dev"  # 或你自己的桶
+# 其余字段保持 dev 默认（http_addr=:8080, postgres=54329, redis=6389）
+
+# 2. 起依赖
+make dev-up-deps
+
+# 3. 迁移
+make server-migrate-dev
+
+# 4. 跑 server（前台监听 :8080）
+make run-server-dev
+
+# 5. 注册 + 鉴权
+TOK=$(curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"email":"local-'$(date +%s)'@agent1.local","password":"pw-1234567890","display_name":"local","device":{"platform_family":"web","platform":"web","installation_id":"inst-'$(date +%s)'","device_name":"local","app_version":"1.0.0-b","push_token":""}}' \
+  http://127.0.0.1:8080/v1/auth/register | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+
+# 6. market 接口（fresh 库应该返回空）
+curl -s -H "Authorization: Bearer $TOK" 'http://127.0.0.1:8080/v1/persona-twins/market?limit=10'
+```
+
+### 前端对接
+
+`src/api/agent1Api.ts:171` 已经实现 `getPersonaTwinsMarket({ limit, cursor })`，跟 service 字段一致。
+**只要本地 server 起得来，`B-Version` 的"人格市场"页面就能直接读数据**，不需要前端改动。
+
+### 建议
+
+| 维度 | 建议 |
+|---|---|
+| 想验证市场分页 / 排序 / cursor | 起本地 opentars-server，跑 curl —— OK |
+| 想看 demo 数据 | 起本地后**写一份 seed migration**，或直接 INSERT 几条固定人格 |
+| 想验证 publish / unpublish 链路 | 必须先修 `/v1/persona-twin` 的 dev 实例 404 |
+| 想验证 use_count | 先找到 IncrementUseCount 入口（如果有），没有就要先补 |
+| B-Version 生产前端 | 当前不需要改任何代码，等后端把上面 4 条补齐 |
+
