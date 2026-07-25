@@ -431,6 +431,29 @@ describe('useMeetingUpload', () => {
     expect(storage.files.size).toBe(0);
   });
 
+  it('enters failed when the SDK loader rejects during stop()', async () => {
+    const { pipeline, storage } = makeHarness();
+    pipeline.stopAndUpload = vi.fn(async () => {
+      throw new Error('chunk offline');
+    }) as unknown as typeof pipeline.stopAndUpload;
+    const { result } = renderHook(() =>
+      useMeetingUpload({
+        ownerUserId: 'user-1',
+        storage: storage as unknown as OpfsMeetingRecordingStorage,
+        pipeline,
+        createRecordingId: () => 'rec-1',
+      }),
+    );
+    await act(async () => {
+      await result.current.start();
+    });
+    await act(async () => {
+      await result.current.stop();
+    });
+    expect(result.current.state).toBe('failed');
+    expect(result.current.error).toBe('chunk offline');
+  });
+
   it('reset() returns the controller to idle from an aborted state', async () => {
     const { pipeline, storage } = makeHarness();
     const { result } = renderHook(() =>
