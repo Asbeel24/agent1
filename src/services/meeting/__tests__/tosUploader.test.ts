@@ -273,4 +273,24 @@ describe('tosUploader', () => {
     await expect(abortPromise).resolves.toBeUndefined();
     await expect(task.result).resolves.toBeUndefined();
   });
+
+  it('keeps abort safe in isolation when the loader never resolves', async () => {
+    // Mirrors the dispose-during-loader scenario at the uploader boundary:
+    // a single `abort()` (no prior pause) is issued before the SDK chunk
+    // finishes loading. Abort must not throw and must skip
+    // `abortMultipartUpload` because no checkpoint was ever minted.
+    let resolveLoader!: (adapter: TosSDKAdapter) => void;
+    const loader = vi.fn(() => new Promise<TosSDKAdapter>((resolve) => {
+      resolveLoader = resolve;
+    }));
+    const { adapter, abortMultipart, cancel } = adapterHarness();
+    const uploader = createTosMeetingUploader(loader);
+    const task = uploader.start(baseInput);
+    const abortPromise = task.abort();
+    expect(cancel).not.toHaveBeenCalled();
+    resolveLoader(adapter);
+    await expect(abortPromise).resolves.toBeUndefined();
+    expect(abortMultipart).not.toHaveBeenCalled();
+    await expect(task.result).resolves.toBeUndefined();
+  });
 });

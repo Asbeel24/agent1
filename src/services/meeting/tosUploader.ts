@@ -93,29 +93,16 @@ export function createTosMeetingUploader(
   source: TosSDKAdapterSource = loadDefaultAdapter,
 ): TosMeetingUploader {
   let resolved: TosSDKAdapter | null = null;
-  const pending: { promise: Promise<TosSDKAdapter> } = {
-    promise: Promise.reject(new Error('adapter unresolved')),
-  };
-  // WARNING: The `.catch(() => undefined)` below is a *placeholder* attached
-  // solely to the synthetic rejected placeholder above. Its only job is to
-  // prevent THIS placeholder from surfacing as an unhandled rejection before
-  // `resolve()` overwrites `pending.promise` with the real loader promise.
-  // It is NOT a global catch-all for upload errors. As soon as `resolve()`
-  // runs, `pending.promise` is reassigned; any rejection from a real upload
-  // is the caller's responsibility to await (via `task.result` / `pause()` /
-  // `abort()`). Do not extend this handler to swallow real errors — that
-  // would hide genuine upload failures from the caller.
-  pending.promise.catch(() => undefined);
 
-  async function resolve(): Promise<TosSDKAdapter> {
-    if (resolved) return resolved;
-    if (typeof source === 'function') {
-      pending.promise = source();
-    } else {
-      pending.promise = Promise.resolve(source);
-    }
-    resolved = await pending.promise;
-    return resolved;
+  function resolveAdapter(): Promise<TosSDKAdapter> {
+    if (resolved) return Promise.resolve(resolved);
+    const promise = typeof source === 'function'
+      ? source()
+      : Promise.resolve(source);
+    return promise.then((adapter) => {
+      resolved = adapter;
+      return adapter;
+    });
   }
   return {
     start(input) {
@@ -143,7 +130,7 @@ export function createTosMeetingUploader(
       // their intent honored, even before the lazy loader resolves.
       let pendingCancelMessage: string | null = null;
 
-      const result = resolve().then((adapter) => {
+      const result = resolveAdapter().then((adapter) => {
         resolvedAdapter = adapter;
         client = adapter.createClient(input.target);
         cancelSource = adapter.createCancelSource();
@@ -199,14 +186,10 @@ export function createTosMeetingUploader(
         if (cancelSource) {
           cancelSource.cancel('meeting upload aborted');
         }
-        try {
-          await result;
-        } catch (error) {
-          if (!resolvedAdapter?.isCancel(error)) {
-            // The business DELETE remains authoritative even if an in-flight
-            // request failed for another reason.
-          }
-        }
+        // Abort is a cleanup operation: the SDK's cancellation rejects the
+        // upload promise, which is expected; any other failure must not
+        // prevent the multipart cleanup that follows.
+        await result.catch(() => undefined);
         // Guard against two distinct stale-ID hazards:
         //   1. `pause()` was called first — `currentCheckpoint` was reset, so
         //      the upload_id here would be the *paused* session's ID, which
