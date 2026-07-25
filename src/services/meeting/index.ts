@@ -21,7 +21,6 @@ export {
   createTosMeetingUploader,
   isTosMeetingUploadCancellation,
   isTosUploadCheckpoint,
-  tosMeetingUploader,
   toTosSDKEndpoint,
 } from './tosUploader';
 export type {

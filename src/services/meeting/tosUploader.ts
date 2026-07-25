@@ -1,8 +1,3 @@
-import {
-  CancelToken,
-  TosClient,
-  isCancel as isTosCancel,
-} from '@volcengine/tos-sdk';
 import type { MeetingUploadTarget } from '../../api/contracts';
 
 const DEFAULT_PART_SIZE = 20 * 1024 * 1024;
@@ -72,24 +67,49 @@ export interface TosMeetingUploader {
   start(input: TosMeetingUploadInput): TosMeetingUploadTask;
 }
 
-const defaultAdapter: TosSDKAdapter = {
-  createClient(target) {
-    return new TosClient({
-      accessKeyId: target.credentials.access_key_id,
-      accessKeySecret: target.credentials.secret_access_key,
-      stsToken: target.credentials.session_token,
-      // The API returns an absolute HTTPS URL, while the official Browser SDK
-      // expects only the host and adds the protocol itself.
-      endpoint: toTosSDKEndpoint(target.endpoint),
-      region: target.region,
-      bucket: target.bucket,
-    }) as unknown as TosSDKClient;
-  },
-  createCancelSource: () => CancelToken.source(),
-  isCancel: isTosMeetingUploadCancellation,
-};
+export async function loadDefaultAdapter(): Promise<TosSDKAdapter> {
+  const { CancelToken, TosClient } = await import('@volcengine/tos-sdk');
+  return {
+    createClient(target) {
+      return new TosClient({
+        accessKeyId: target.credentials.access_key_id,
+        accessKeySecret: target.credentials.secret_access_key,
+        stsToken: target.credentials.session_token,
+        // The API returns an absolute HTTPS URL, while the official Browser SDK
+        // expects only the host and adds the protocol itself.
+        endpoint: toTosSDKEndpoint(target.endpoint),
+        region: target.region,
+        bucket: target.bucket,
+      }) as unknown as TosSDKClient;
+    },
+    createCancelSource: () => CancelToken.source(),
+    isCancel: isTosMeetingUploadCancellation,
+  };
+}
 
-export function createTosMeetingUploader(adapter: TosSDKAdapter = defaultAdapter): TosMeetingUploader {
+export type TosSDKAdapterSource = TosSDKAdapter | (() => Promise<TosSDKAdapter>);
+
+export function createTosMeetingUploader(
+  source: TosSDKAdapterSource = loadDefaultAdapter,
+): TosMeetingUploader {
+  let resolved: TosSDKAdapter | null = null;
+  const pending: { promise: Promise<TosSDKAdapter> } = {
+    promise: Promise.reject(new Error('adapter unresolved')),
+  };
+  // The initial rejected promise is overwritten before any awaiter touches it;
+  // attach a no-op handler so it doesn't surface as an unhandled rejection.
+  pending.promise.catch(() => undefined);
+
+  async function resolve(): Promise<TosSDKAdapter> {
+    if (resolved) return resolved;
+    if (typeof source === 'function') {
+      pending.promise = source();
+    } else {
+      pending.promise = Promise.resolve(source);
+    }
+    resolved = await pending.promise;
+    return resolved;
+  }
   return {
     start(input) {
       validateTarget(input.target);
@@ -97,55 +117,73 @@ export function createTosMeetingUploader(adapter: TosSDKAdapter = defaultAdapter
         throw new Error('上传断点记录与当前会议录音不匹配');
       }
 
-      const client = adapter.createClient(input.target);
-      const cancelSource = adapter.createCancelSource();
       let currentCheckpoint = input.checkpoint;
-      // TOS transport parts never pass through our API server. The SDK owns
-      // multipart retries while this callback exposes only business progress
-      // and a credential-free checkpoint that OPFS can safely persist.
-      const rawResult = client.uploadFile({
-        bucket: input.target.bucket,
-        key: input.target.object_key,
-        file: input.file,
-        contentType: 'audio/wav',
-        partSize: DEFAULT_PART_SIZE,
-        taskNum: DEFAULT_TASK_COUNT,
-        checkpoint: input.checkpoint,
-        cancelToken: cancelSource.token,
-        dataTransferStatusChange(status) {
-          if (status.totalBytes > 0) {
-            input.onProgress?.(Math.max(0, Math.min(1, status.consumedBytes / status.totalBytes)));
-          }
-        },
-        progress(percent, checkpoint) {
-          currentCheckpoint = checkpoint;
-          input.onCheckpoint?.(checkpoint);
-          input.onProgress?.(Math.max(0, Math.min(1, percent)));
-        },
+      let resolvedAdapter: TosSDKAdapter | null = null;
+      let client: TosSDKClient | null = null;
+      let cancelSource: TosCancelSource | null = null;
+      // Queue cancel intent so synchronous pause()/abort() callers always see
+      // their intent honored, even before the lazy loader resolves.
+      let pendingCancelMessage: string | null = null;
+
+      const result = resolve().then((adapter) => {
+        resolvedAdapter = adapter;
+        client = adapter.createClient(input.target);
+        cancelSource = adapter.createCancelSource();
+        if (pendingCancelMessage !== null) {
+          cancelSource.cancel(pendingCancelMessage);
+        }
+        // TOS transport parts never pass through our API server. The SDK owns
+        // multipart retries while this callback exposes only business progress
+        // and a credential-free checkpoint that OPFS can safely persist.
+        return client.uploadFile({
+          bucket: input.target.bucket,
+          key: input.target.object_key,
+          file: input.file,
+          contentType: 'audio/wav',
+          partSize: DEFAULT_PART_SIZE,
+          taskNum: DEFAULT_TASK_COUNT,
+          checkpoint: input.checkpoint,
+          cancelToken: cancelSource.token,
+          dataTransferStatusChange(status) {
+            if (status.totalBytes > 0) {
+              input.onProgress?.(Math.max(0, Math.min(1, status.consumedBytes / status.totalBytes)));
+            }
+          },
+          progress(percent, checkpoint) {
+            currentCheckpoint = checkpoint;
+            input.onCheckpoint?.(checkpoint);
+            input.onProgress?.(Math.max(0, Math.min(1, percent)));
+          },
+        }).then(() => undefined);
       });
-      const result = rawResult.then(() => undefined);
 
       async function pause(): Promise<void> {
-        cancelSource.cancel('meeting upload paused');
+        pendingCancelMessage = 'meeting upload paused';
+        if (cancelSource) {
+          cancelSource.cancel('meeting upload paused');
+        }
         try {
           await result;
         } catch (error) {
-          if (!adapter.isCancel(error)) throw error;
+          if (!resolvedAdapter?.isCancel(error)) throw error;
         }
       }
 
       async function abort(): Promise<void> {
-        cancelSource.cancel('meeting upload aborted');
+        pendingCancelMessage = 'meeting upload aborted';
+        if (cancelSource) {
+          cancelSource.cancel('meeting upload aborted');
+        }
         try {
           await result;
         } catch (error) {
-          if (!adapter.isCancel(error)) {
+          if (!resolvedAdapter?.isCancel(error)) {
             // The business DELETE remains authoritative even if an in-flight
             // request failed for another reason.
           }
         }
         if (!currentCheckpoint?.upload_id) return;
-        await client.abortMultipartUpload({
+        await client?.abortMultipartUpload({
           bucket: input.target.bucket,
           key: input.target.object_key,
           uploadId: currentCheckpoint.upload_id,
@@ -169,7 +207,6 @@ export function isTosUploadCheckpoint(value: unknown): value is TosUploadCheckpo
 }
 
 export function isTosMeetingUploadCancellation(error: unknown): boolean {
-  if (isTosCancel(error)) return true;
   if (!error || typeof error !== 'object') return false;
   const candidate = error as { __CANCEL__?: unknown; code?: unknown };
   return candidate.__CANCEL__ === true || candidate.code === 'ERR_CANCELED';
@@ -204,5 +241,3 @@ function validateTarget(target: MeetingUploadTarget): void {
     throw new Error('服务器返回了无效的 TOS 上传凭证');
   }
 }
-
-export const tosMeetingUploader = createTosMeetingUploader();
