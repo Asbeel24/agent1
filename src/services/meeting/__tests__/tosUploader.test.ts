@@ -150,4 +150,81 @@ describe('tosUploader', () => {
     expect(progress).toHaveBeenCalledWith(0.5);
     expect(onCheckpoint).toHaveBeenCalledWith(expect.objectContaining({ upload_id: 'upload-2' }));
   });
+
+  it('queues pause() cancel intent until the lazy loader resolves, then resumes cleanly', async () => {
+    // The lazy SDK loader is represented by `createCancelSource` returning a
+    // source whose `.cancel()` records every call. By delaying its resolution
+    // we simulate `pause()` arriving BEFORE the loader promise settles —
+    // exactly the race that motivated Issue 1's fix.
+    let resolveLoader: ((adapter: TosSDKAdapter) => void) | null = null;
+    const loaderPromise = new Promise<TosSDKAdapter>((resolve) => {
+      resolveLoader = resolve;
+    });
+    const { adapter, cancel, cancelSource } = adapterHarness();
+    const uploader = createTosMeetingUploader(() => loaderPromise);
+
+    const task = uploader.start(baseInput);
+
+    // Synchronous pause() — must NOT throw even though `resolve()` has not
+    // returned yet, and must queue the cancel message for the cancelSource
+    // that does not yet exist.
+    const pausePromise = task.pause();
+    expect(cancel).not.toHaveBeenCalled();
+
+    // Now resolve the loader. The pending cancel message must reach
+    // `cancelSource.cancel(...)` before `uploadFile` is invoked, so the
+    // SDK cancels the upload cleanly instead of doing real network work.
+    resolveLoader!(adapter);
+    // Flush the full microtask chain: `resolve()` (async) → `await pending`
+    // → `.then(adapter => …)` in `start()` → `createCancelSource()` →
+    // `cancelSource.cancel(pendingCancelMessage)`. One macrotask tick is
+    // enough for the queued microtasks to drain.
+    await new Promise<void>((tick) => setTimeout(tick, 0));
+
+    // The queued cancel must have been flushed exactly once, with the
+    // pause message.
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(cancel).toHaveBeenCalledWith('meeting upload paused');
+
+    // The SDK mock has `uploadFile` resolve successfully even though the
+    // cancel was issued (the SDK doesn't enforce cancellation in the mock);
+    // `pause()`'s try/catch filters that out via `adapter.isCancel` so the
+    // await resolves cleanly without rethrowing.
+    await expect(pausePromise).resolves.toBeUndefined();
+    expect(cancelSource.cancel).toHaveBeenCalledWith('meeting upload paused');
+  });
+
+  it('does not call abortMultipartUpload with the stale paused checkpoint after pause()', async () => {
+    // Pause-then-abort sequence on a fresh (non-resumed) upload. The pause
+    // cancels the upload session server-side via the SDK; a follow-up abort
+    // must NOT issue another `abortMultipartUpload` against that same
+    // (now-dead) `upload_id`.
+    const { adapter, abortMultipart } = adapterHarness();
+    const uploader = createTosMeetingUploader(adapter);
+    const task = uploader.start(baseInput);
+    await task.result;
+    await task.pause();
+    await task.abort();
+    expect(abortMultipart).not.toHaveBeenCalled();
+  });
+
+  it('does not call abortMultipartUpload with a resumed checkpoint after pause() precedes abort()', async () => {
+    // Resume case (caller passes a checkpoint) followed by pause-then-abort.
+    // Without the fix, `abort()` would re-issue `abortMultipartUpload`
+    // against the paused session's `upload_id`. With the fix, `pause()`
+    // clears checkpoint ownership, so `abort()` skips the abort call.
+    const resumedCheckpoint: TosUploadCheckpoint = {
+      bucket: 'meeting-bucket',
+      key: 'meeting/uploads/recording.wav',
+      part_size: 20 * 1024 * 1024,
+      upload_id: 'stale-resumed-id',
+    };
+    const { adapter, abortMultipart } = adapterHarness();
+    const uploader = createTosMeetingUploader(adapter);
+    const task = uploader.start({ ...baseInput, checkpoint: resumedCheckpoint });
+    await task.result;
+    await task.pause();
+    await task.abort();
+    expect(abortMultipart).not.toHaveBeenCalled();
+  });
 });

@@ -96,8 +96,15 @@ export function createTosMeetingUploader(
   const pending: { promise: Promise<TosSDKAdapter> } = {
     promise: Promise.reject(new Error('adapter unresolved')),
   };
-  // The initial rejected promise is overwritten before any awaiter touches it;
-  // attach a no-op handler so it doesn't surface as an unhandled rejection.
+  // WARNING: The `.catch(() => undefined)` below is a *placeholder* attached
+  // solely to the synthetic rejected placeholder above. Its only job is to
+  // prevent THIS placeholder from surfacing as an unhandled rejection before
+  // `resolve()` overwrites `pending.promise` with the real loader promise.
+  // It is NOT a global catch-all for upload errors. As soon as `resolve()`
+  // runs, `pending.promise` is reassigned; any rejection from a real upload
+  // is the caller's responsibility to await (via `task.result` / `pause()` /
+  // `abort()`). Do not extend this handler to swallow real errors — that
+  // would hide genuine upload failures from the caller.
   pending.promise.catch(() => undefined);
 
   async function resolve(): Promise<TosSDKAdapter> {
@@ -118,6 +125,17 @@ export function createTosMeetingUploader(
       }
 
       let currentCheckpoint = input.checkpoint;
+      // Tracks whether `currentCheckpoint` describes a multipart session that
+      // this task is responsible for cleaning up via `abortMultipartUpload`.
+      // Two sources can establish ownership:
+      //   (a) The caller passed `input.checkpoint` to resume an in-flight
+      //       upload; aborting must tear down that resumed session.
+      //   (b) The SDK's `progress()` callback minted a fresh checkpoint; the
+      //       task owns that session from the moment it was reported.
+      // `pause()` clears ownership regardless of source, because the pause
+      // cancels the session server-side and the checkpoint is no longer
+      // authoritative for any subsequent `abort()`.
+      let checkpointOwnedByThisTask = input.checkpoint !== undefined;
       let resolvedAdapter: TosSDKAdapter | null = null;
       let client: TosSDKClient | null = null;
       let cancelSource: TosCancelSource | null = null;
@@ -151,6 +169,7 @@ export function createTosMeetingUploader(
           },
           progress(percent, checkpoint) {
             currentCheckpoint = checkpoint;
+            checkpointOwnedByThisTask = true;
             input.onCheckpoint?.(checkpoint);
             input.onProgress?.(Math.max(0, Math.min(1, percent)));
           },
@@ -162,6 +181,12 @@ export function createTosMeetingUploader(
         if (cancelSource) {
           cancelSource.cancel('meeting upload paused');
         }
+        // The paused session is dead. Forget its checkpoint so a follow-up
+        // `abort()` cannot resurrect the old `upload_id` and call
+        // `abortMultipartUpload` against a session that is already cancelled
+        // server-side by the SDK's own cancellation.
+        checkpointOwnedByThisTask = false;
+        currentCheckpoint = undefined;
         try {
           await result;
         } catch (error) {
@@ -182,11 +207,22 @@ export function createTosMeetingUploader(
             // request failed for another reason.
           }
         }
-        if (!currentCheckpoint?.upload_id) return;
+        // Guard against two distinct stale-ID hazards:
+        //   1. `pause()` was called first — `currentCheckpoint` was reset, so
+        //      the upload_id here would be the *paused* session's ID, which
+        //      the SDK has already cancelled and which we must not abort.
+        //   2. The SDK never reported a progress checkpoint (e.g. the upload
+        //      failed before the first part completed). In that case there
+        //      is no live multipart session to abort — the server-side
+        //      cleanup is the business DELETE's job.
+        // Only invoke `abortMultipartUpload` when the SDK actually minted a
+        // checkpoint for THIS task's upload session.
+        if (!checkpointOwnedByThisTask || !currentCheckpoint?.upload_id) return;
+        const uploadId = currentCheckpoint.upload_id;
         await client?.abortMultipartUpload({
           bucket: input.target.bucket,
           key: input.target.object_key,
-          uploadId: currentCheckpoint.upload_id,
+          uploadId,
         }).catch(() => undefined);
       }
 
