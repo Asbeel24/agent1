@@ -483,9 +483,8 @@ npm run dev                       # 在 http://localhost:5173 进入「会议」
 
 1. **`/v1/tasks` 必须带 `timezone` IANA 名**，否则 400 `invalid_timezone`。
    前端 `agent1Api.getTasks` 实际构造请求时已经在 `queryString(input)` 里塞 timezone，curl 不带参数才看到 400，这条对前端 **不是问题**。
-2. **`/v1/persona-twin`（当前用户自有人格）在 dev 后端返回 404**，但 `server/httpserver/router.go` 已经挂了 Swagger 文档。
-   `getPersonaTwin` 在 `agent1Api.ts` 定义但**没有被任何 UI 调用**，所以前端不感知。
-   后端需要补上 dev 实例的路由注册，或者前端可以临时用 `null` 直走 mock 直到补齐。
+2. **`/v1/persona-twin`（当前用户自有人格）在 dev 后端返回 404**。当前 OpenTars main 的 `server/bootstrap/bootstrap.go` 已注入对应 handler，因此这更可能是 dev 部署版本、启动装配路径或网关转发与当前 main 不一致。
+   `getPersonaTwin` 在 `agent1Api.ts` 定义但**没有被当前 UI 调用**，所以基础页面暂不受影响；后端需通过部署 commit SHA 与路由 smoke test 定位原因。
 
 ### 端口与 CORS 现状
 
@@ -532,7 +531,7 @@ npm run dev                       # 在 http://localhost:5173 进入「会议」
 1. **没有 INSERT seed migration**：`0015_persona_twins.up.sql` 只 `CREATE TABLE` / 索引 / 外键，**没有任何 seed insert**。
    - 你看到的 45 条人格（林序、Mia Chen…）来自 dev 部署历史的手工插入或 e2e seed——fresh 数据库起出来 market 是空的。
    - 想"开箱有数据"，要么写一份 `0016_persona_twins_seed.up.sql`，要么在 e2e harness 跑 `cmd/opentars-server-api-e2e/main.go`。
-2. **`/v1/persona-twin`（自有人格）dev 实例返回 404**：路由在 router.go 已挂，但 dev 实例没注册。这条卡死了所有 publish/unpublish/use_count++ 链路。
+2. **`/v1/persona-twin`（自有人格）dev 实例返回 404**：当前 main 已在 bootstrap 注入对应 handler，但 dev 部署仍不可达。这条会阻塞 publish/unpublish 链路，需要先核对部署 commit、启动装配路径和网关转发。
 3. **没有 use 入口**：market 排序列是 `use_count DESC`，但代码里没看到调用 `IncrementUseCount` 的位置。use_count 永远初始为 0，market 排序退化成 `created_at DESC`。
 4. **没有命名的语义化"市场排序算法"**——就是 `ORDER BY use_count DESC, created_at DESC, id DESC`，文档里没写。
 
@@ -592,4 +591,74 @@ curl -s -H "Authorization: Bearer $TOK" 'http://127.0.0.1:8080/v1/persona-twins/
 | 想验证 publish / unpublish 链路 | 必须先修 `/v1/persona-twin` 的 dev 实例 404 |
 | 想验证 use_count | 先找到 IncrementUseCount 入口（如果有），没有就要先补 |
 | B-Version 生产前端 | 当前不需要改任何代码，等后端把上面 4 条补齐 |
+
+## 15. B-Version × OpenTars 全量对接可行性（2026-07-24）
+
+### 最终结论
+
+**可以对接，但当前只能作为“核心页面可运行、会议闭环待后端部署同步”的前端，不能把现有 dev 域名视为完整生产后端。**
+
+- B-Version 与当前 OpenTars `main` 的 REST 路径、鉴权方式、请求字段和主要响应类型基本一致；不需要改端口，也不需要另写一层 API adapter。
+- 当前公网 `https://agent1-dev-api.bicamind.xyz` 能支撑登录、配置、任务列表、人格市场和会议列表等基础页面。
+- 会议录音闭环依赖的上传初始化、完成、transcript、summary 等端点虽然在当前仓库 `server/bootstrap/bootstrap.go:377-408` 全部注入，但公网 dev 实测仍有多条返回 404。因此，**源码具备能力不等于现有部署已经具备能力**。
+- 要达到“流畅运行”，后端团队必须先把 dev 实例升级到与当前 main 一致的构建，并把 Vercel 域名加入 CORS；随后完成一次真实 TOS 上传到 transcript/summary 的端到端验收。
+
+### 分层判断
+
+| 层级 | 结论 | 证据 |
+|---|---|---|
+| HTTP 基址 | 对齐 | 前端默认 `https://agent1-dev-api.bicamind.xyz`；本地可用 Vite `/opentars-api` 代理 |
+| 鉴权 | 对齐 | register/login 返回 token，后续请求使用 Bearer；线上 `/v1/me` 实测 200 |
+| 基础 UI | 可运行 | config、tasks、persona market、meetings、meeting settings 实测可达 |
+| 人格市场读取 | 可运行 | `/v1/persona-twins/market` 实测 200，前后端 cursor/limit 契约一致 |
+| 自有人格管理 | 当前部署不完整 | 当前源码已注入 Get/Generate/Rename/Publish/Unpublish；dev 实测部分 404 |
+| 会议录音上传 | 源码对齐，部署待验 | 前端已实现五个 `/v1/meeting-uploads*` 调用；后端 bootstrap 全部注入，但尚未完成真实公网 TOS 验收 |
+| 转写与总结 | 当前部署阻塞 | B-Version 会调用 transcript/summary；dev 实测两条均 404，无法完成会议结果页 |
+| WebSocket | 协议可对接 | `/ws` 存在，需携带 token；仍需浏览器长连接稳定性验收 |
+| CORS | 部署条件 | Vercel 独立域名必须进入后端 `allowed_origins`，否则浏览器会在网络层拦截 |
+
+### B-Version 实际页面依赖矩阵
+
+| 前端能力 | Endpoint | 当前仓库 main | 公网 dev 实测 | 对页面的影响 |
+|---|---|---:|---:|---|
+| 配置加载 | `GET /v1/config` | 已注册 | 200 | 正常 |
+| 注册 | `POST /v1/auth/register` | 已注册 | 200 | 正常 |
+| 登录 | `POST /v1/auth/login` | 已注册 | 200 | 正常 |
+| 会话恢复 | `GET /v1/me` | 已注册 | 200 | 正常 |
+| 每日任务 | `GET /v1/tasks` | 已注册 | 200（参数正确时） | 正常；必须传 IANA timezone |
+| 人格市场 | `GET /v1/persona-twins/market` | 已注册 | 200 | 正常 |
+| 会议上传初始化 | `POST /v1/meeting-uploads` | 已注册 | 未完成有效 TOS 凭证验收 | 会议录音闭环风险 |
+| 上传凭证刷新 | `POST /v1/meeting-uploads/{id}/credentials` | 已注册 | 未端到端验收 | 断点续传风险 |
+| 上传完成 | `POST /v1/meeting-uploads/{id}/complete` | 已注册 | 未端到端验收 | 无法确认 meeting_id 生成 |
+| 会议转写 | `GET /v1/meetings/{id}/transcript` | 已注册 | 404 | 结果页无法显示真实转写 |
+| 会议总结 | `GET /v1/meetings/{id}/summary` | 已注册 | 404 | 结果页无法显示真实总结 |
+
+### 为什么当前 dev 的 404 不能归因于当前源码
+
+`server/httpserver/router.go` 对每个业务 handler 采用 nil 检查后注册；而当前 `server/bootstrap/bootstrap.go:357-410` 明确把 persona、meeting、upload、share 等 handler 全部传给 `NewRouter`。因此，同一域名出现“market 200、persona Get 404、transcript 404”的现象，最合理解释是：
+
+1. dev 实例运行的构建早于当前 main，或部署工件未同步；
+2. dev 实例不是由当前 `bootstrap.New` 路径装配；
+3. 反向代理/网关只转发了部分路径。
+
+不能再表述为“router.go 已有 Swagger，所以只是某个 handler 没注册”。应由后端通过部署 commit SHA、启动日志和网关路由表确认实际原因。
+
+### 上线前必须完成的后端动作
+
+1. 将 `agent1-dev-api.bicamind.xyz` 部署到明确的 OpenTars commit，并暴露 build SHA 供核验。
+2. 对 38 条 Swagger 路径跑一次部署后 smoke test，至少保证 B-Version 依赖的 11 条全部不是路由级 404。
+3. 把 Vercel production 域名和需要保留的 preview 域名加入 CORS allowlist；不建议使用 `*` 配合凭证请求。
+4. 配置并验证 TOS bucket、临时 STS 凭证、multipart upload 与 complete 回调。
+5. 用真实浏览器跑通：注册 → 登录 → 录音 → OPFS → TOS → complete → transcript → summary。
+6. 为 transcript/summary 的 processing 状态定义前端可识别的响应；未完成时返回明确状态，不应使用路由 404 表示处理中。
+
+### 建议的验收门槛
+
+| 等级 | 条件 | 是否可给 Braden 使用 |
+|---|---|---|
+| A：基础联调 | 登录、配置、任务、人格市场全部正常 | 可以做基础 UI 开发 |
+| B：会议联调 | 上传五接口可用，能拿到 `meeting_id` | 可以测试会议采集和上传 |
+| C：完整闭环 | transcript + summary 可读取，WebSocket 稳定，CORS 正确 | 才能称为“流畅运行的 OpenTars 前端” |
+
+当前状态介于 **A 与 B 之间**。前端代码契约已经接近 C，但公网后端证据尚未达到 C。
 
