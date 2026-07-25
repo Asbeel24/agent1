@@ -383,7 +383,7 @@ docs/AGENT1_INTERFACE_CONTRACT.md 和 docs/B_VERSION_API_ALIGNMENT.md。
 不要提交 token、随机本地账号密码或 TOS 临时凭证。
 ```
 
-## 11. 会议录音上传链路（2026-07-24 补充）
+## 12. 会议录音上传链路（2026-07-24 补充）
 
 针对优先级 2「会议模式录音接到 OpenTars WAV/TOS 上传会话」的工作已完成阶段性落地。本次改动在保留原有视觉、粒子球和场景交互的前提下，把会议场景从"录音帧被丢弃"修复为"OPFS 暂存 → TOS 直传 → 云端 transcript + summary"。
 
@@ -454,4 +454,60 @@ npm run dev                       # 在 http://localhost:5173 进入「会议」
 
 1. `feat: wire meeting recording to OpenTars TOS upload`
 2. `refactor: source MeetingTranscript from cloud transcript and summary`
+
+## 13. 双向链路验证（2026-07-25）
+
+`0xdenny218/opentars` 后端 + `Asbeel24/agent1` B-Version 前端之间的公开接口在真实线上环境中跑了一次。结论：**B-Version 走默认 dev 后端 `agent1-dev-api.bicamind.xyz` 的链路是稳的**，只有两条小坑需要前端或者 dev 后端补。
+
+### 测试方法
+
+- 真实环境：双方都是 public 公网部署，没有本地 compose 起 PG/Redis/TOS。
+- 工具：直接 `curl` 对 `https://agent1-dev-api.bicamind.xyz` 跑测试账号注册 + 鉴权调用 + Swagger 比对。
+- 验证目标：覆盖 B-Version 真实调用的接口路径，而不是后端代码里有但前端用不到的全集。
+
+### 哪些链路通了
+
+| Endpoint | Method | 状态 | 备注 |
+|---|---|---|---|
+| `/v1/config` | GET | 200 | 返回完整 voice / language / profile 配置 |
+| `/v1/auth/register` | POST | 200 | 返回 access_token / refresh_token / user |
+| `/v1/auth/login` | POST | 200 | 已注册账号重登可用 |
+| `/v1/me` | GET | 200 | 鉴权 + 当前会话回读 |
+| `/v1/meetings` | GET | 200 | 空列表 |
+| `/v1/meeting-settings` | GET | 200 | |
+| `/v1/persona-twins/market?limit=5` | GET | 200 | 真实市场条目（林序、Mia Chen 等） |
+| `/v1/tasks?date=...&timezone=Asia/Shanghai` | GET | 200 | 空任务列表 |
+| `/ws` WebSocket upgrade | GET | 101/401 | 仅握手；前端持 Bearer 通过 query 鉴权 |
+
+### 需要注意的两条小坑
+
+1. **`/v1/tasks` 必须带 `timezone` IANA 名**，否则 400 `invalid_timezone`。
+   前端 `agent1Api.getTasks` 实际构造请求时已经在 `queryString(input)` 里塞 timezone，curl 不带参数才看到 400，这条对前端 **不是问题**。
+2. **`/v1/persona-twin`（当前用户自有人格）在 dev 后端返回 404**，但 `server/httpserver/router.go` 已经挂了 Swagger 文档。
+   `getPersonaTwin` 在 `agent1Api.ts` 定义但**没有被任何 UI 调用**，所以前端不感知。
+   后端需要补上 dev 实例的路由注册，或者前端可以临时用 `null` 直走 mock 直到补齐。
+
+### 端口与 CORS 现状
+
+- 后端 HTTP 端口：`18888`（配置文件），dev 公网域名反向代理到 `https://agent1-dev-api.bicamind.xyz`。
+- 前端 Vite dev 代理：`/opentars-api` → `https://agent1-dev-api.bicamind.xyz`（仅本地 dev 用）。
+- 前端 Vercel 部署：B-Version 默认 `runtime.ts` 写死 fallback 到 `https://agent1-dev-api.bicamind.xyz`，所以 Vercel 构建出来直接调公开域名，不需要 CORS 中转。
+- CORS：dev 后端对同源没问题；以后 Vercel 部署出独立域名时，要在后端 TOML 的 `[cors.allowed_origins]` 加上 Vercel 域名，否则浏览器会拦截。
+
+### 给 Braden（Vercel 端）的一次性核对
+
+1. 在 Vercel 项目 `lumina-voice-orb` 上面把 `VITE_OPENTARS_*` 留空即可，runtime fallback 会自动指向 `agent1-dev-api.bicamind.xyz`。
+2. 如果后端 CORS 没自动放行 Vercel 预览域名，dev 后端 TOML 加 `cors.allowed_origins = ["https://lumina-voice-orb.vercel.app"]`。
+3. 部署后用新注册账号试一次 `/v1/me` 确认跨域 fetch + Bearer header 工作正常。
+
+### 截图与方法学
+
+| 步骤 | 期望 |
+|---|---|
+| `POST /v1/auth/register` 随机本地邮箱 | 返回 200 + access_token |
+| `GET /v1/me` | 返回 user + auth_session |
+| `GET /v1/persona-twins/market?limit=5` | 返回 5 条真实条目 |
+| `GET /v1/tasks?date=...&timezone=Asia/Shanghai` | 返回 `{"tasks":[], "total":0}` |
+| `GET /v1/meetings` | 返回空列表 |
+| `GET /v1/persona-twin` | 当前返回 404，未被 UI 使用，可接受 |
 
